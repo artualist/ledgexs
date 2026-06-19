@@ -789,22 +789,25 @@ def _fetch_token_info(ca: str, chain_id: str) -> dict[str, Any] | None:
 def _assign_unique_payment(uid: int) -> int:
     """Reserve a collision-free 6-decimal USDT amount for this user in the DB.
 
-    Base = PREMIUM_PRICE in USDT base units.  We append a random 6-digit
-    fractional part (000001–999999) so the on-chain amount is unique per user
-    and never collides with any currently-active reservation.
+    We enforce 6 decimals internally (like Tron/Ethereum USDT) to prevent 
+    SQL BIGINT overflow and ensure the 6-digit fractional part is fully visible.
     """
-    # Re-use an existing valid reservation so the displayed amount is stable
     existing = db.get_pending_payment(uid)
     if existing is not None:
         return existing
-    base = PREMIUM_PRICE_CENTS * (10 ** USDT_DECIMALS) // 100
+
+    # Global config ne olursa olsun, ödeme tablosu için 6 decimal sabitliyoruz
+    PAYMENT_DECIMALS = 6
+    base = PREMIUM_PRICE_CENTS * (10 ** PAYMENT_DECIMALS) // 100  # Örn: 19990000
+    
     for _ in range(200):
         frac = random.randint(1, 999_999)
         candidate = base + frac
         if not db.is_amount_reserved(candidate):
             db.reserve_payment(uid, candidate)
             return candidate
-    # Astronomically unlikely fallback — just reserve without collision check
+
+    # Fallback
     fallback = base + random.randint(1, 999_999)
     db.reserve_payment(uid, fallback)
     return fallback
@@ -812,7 +815,7 @@ def _assign_unique_payment(uid: int) -> int:
 
 def _usdt_display(base_units: int) -> str:
     """Format USDT base units as a 6-decimal string (e.g. '20.123456')."""
-    return f"{base_units / (10**USDT_DECIMALS):.6f}"
+    return f"{base_units / (10**6):.6f}"
 
 
 def _verify_usdt_payment(expected_amount: int) -> bool:
@@ -829,7 +832,7 @@ def _verify_usdt_payment(expected_amount: int) -> bool:
             to_block=latest,
             argument_filters={"to": Web3.to_checksum_address(PAYMENT_WALLET)},
         )
-        return any(e["args"]["value"] == expected_amount for e in events)
+        return any(e["args"]["value"] == expected_amount * (10**12) for e in events)
     except Exception as exc:
         logger.warning("Payment verify error: %s", exc)
         return False

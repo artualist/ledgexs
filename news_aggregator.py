@@ -106,7 +106,7 @@ _BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
 _API_ID      = os.environ.get("TELEGRAM_API_ID", "")
 _API_HASH    = os.environ.get("TELEGRAM_API_HASH", "")
 _SESSION_STR = os.environ.get("TELETHON_SESSION", "")
-_AI_BASE_URL = os.environ.get("AI_INTEGRATIONS_OPENAI_BASE_URL", "")
+_AI_BASE_URL = "https://api.openai.com/v1"
 _AI_API_KEY  = os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY", "dummy")
 
 # ── Optional-import guards ────────────────────────────────────────────────────
@@ -317,6 +317,14 @@ def _pick_header(clean_text: str) -> tuple[str, str]:
         keyword = m.group(1).upper()
         body    = clean_text[m.end():].strip()
         return f"🚨 <b>{keyword}:</b>", body
+    
+    # EĞER HABER ZATEN "JUST IN" İÇERİYORSA BİR DAHA EKLEME
+    if clean_text.upper().startswith("JUST IN"):
+        # "JUST IN" kısmını temizle, sadece gövdeyi al, emojiyi ekle
+        body = clean_text[7:].strip(" :") 
+        return "🚨 <b>JUST IN:</b>", body
+
+    # İçermiyorsa normal şekilde ekle
     return "🚨 <b>JUST IN:</b>", clean_text
 
 

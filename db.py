@@ -4,6 +4,7 @@ import time
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from config import PAYMENT_TTL_SECONDS  # Tertemiz, hata risk sıfır
 
 DB_PATH = "/data/whale.db"
 _lock = threading.Lock()  # Lock'u en başa aldık
@@ -13,6 +14,9 @@ def _conn() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+def get_pending_payment(uid):
+    cutoff = int(time.time()) - PAYMENT_TTL_SECONDS
 
 def init_db() -> None:
     # 1. Klasör yapısını oluştur

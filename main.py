@@ -14,7 +14,7 @@ import requests
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Any
 
 import telebot
@@ -1782,7 +1782,7 @@ def _channel_digest_loop() -> None:
     """
     logger.info("Channel digest thread started (fires at 20:00 UTC daily).")
     while True:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         # Next 20:00 UTC — if we're already past it today, schedule for tomorrow
         target = now.replace(hour=20, minute=0, second=0, microsecond=0)
         if now >= target:
@@ -1810,7 +1810,7 @@ def _digest_loop() -> None:
     logger.info("Daily digest thread started.")
     while True:
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             hour = now.hour
             today = now.strftime("%Y-%m-%d")
             for row in db.get_users_for_digest(hour, today):

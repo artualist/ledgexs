@@ -1154,7 +1154,7 @@ def _rebuild_qt_keyboard(
     for row in curr.keyboard:
         for btn in row:
             cd = getattr(btn, "callback_data", "")
-            if cd.startswith("qt:"):
+            if cd is not None and cd.startswith("qt:"):
                 parts = cd.split(":", 2)
                 if len(parts) == 3:
                     token_keys.append((parts[1], parts[2]))

@@ -235,10 +235,19 @@ _SENTENCE_SEP = re.compile(r"(?<=[.!?])\s+")
 def _clean_text(text: str) -> str:
     text = _MD_LINK_RE.sub(" ", text)
     text = _URL_RE.sub(" ", text)
-    text = _MENTION_RE.sub(" ", text)
+    
+    # Mention'ları sadece "kelime sınırı" olan yerlerden sil (sayısal veriye dokunma)
+    text = re.sub(r'(?<!\d)@\w+', ' ', text) 
+    
+    # Diğer temizlikler
     text = _ASTERISK_RE.sub(" ", text)
     text = _PAREN_RE.sub(" ", text)
+    
+    # SOURCE_RE'yi kullanırken kelime sınırlarına dikkat et
     text = _SOURCE_RE.sub(" ", text)
+    
+    # Sayısal karakterleri (0-9), nokta (.) ve virgül (,) içeren blokları 
+    # temizlemeden sadece boşlukları düzeltiyoruz:
     text = _MULTI_WS_RE.sub(" ", text).strip()
     return text
 

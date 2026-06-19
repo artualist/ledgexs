@@ -82,7 +82,7 @@ AI_COMBINED_PROMPT = (
     "you MUST translate it to fluent, professional English immediately. NEVER output non-English text.\n\n"
     
     "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS covers the same core event as the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE\n"
-    "CRITICAL RULE 2 (SPAM FILTER): If the text is promotional, output ONLY: DUPLICATE\n\n"
+    "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
     "1. STARTING MARKER: Use exactly one bold HTML tag: <b>JUST IN:</b>, <b>BREAKING:</b>, or <b>MARKET ALERT:</b>\n"

@@ -439,7 +439,14 @@ async def _run_news_client() -> None:
         )
         return
 
-    client = TelegramClient(StringSession(_SESSION_STR), int(_API_ID), _API_HASH)
+    client = TelegramClient(
+        StringSession(_SESSION_STR), 
+        int(_API_ID), 
+        _API_HASH,
+        connection_retries=None,  # Bağlantı koparsa sonsuza kadar yeniden denesin
+        retry_delay=5,            # Denemeler arası 5 saniye beklesin
+        auto_reconnect=True       # Ağ gelince otomatik yeniden bağlansın
+    )
 
     pending_groups: dict[int, list[Any]] = {}
     pending_tasks:  dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
@@ -480,6 +487,8 @@ async def _run_news_client() -> None:
 
     try:
         await client.start()
+        logger.info("news_aggregator: Warming up entity cache by fetching dialogs...")
+        await client.get_dialogs()
         logger.info("news_aggregator: Telethon UserBot connected. Listening to: %s", SOURCE_CHANNELS)
         await client.run_until_disconnected()
     except Exception as exc:

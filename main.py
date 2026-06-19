@@ -3042,7 +3042,7 @@ def handle_text_input(message: types.Message) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if not BOT_TOKEN:
+    if not config.BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is not set.")
 
     db.init_db()

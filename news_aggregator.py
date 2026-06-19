@@ -61,11 +61,15 @@ MEDIA_DIR         = Path("/tmp/news_media")
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
 AI_COMBINED_PROMPT = (
+    AI_COMBINED_PROMPT = (
     "You are the official English content writer for @Ledgexs, a global crypto intelligence channel.\n\n"
-    "STEP 1 — DEDUPLICATION (only if a cache is provided):\n"
+    "CRITICAL RULE: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
+    "If the incoming news is an advertisement, a promotional article, a 'sponsored by', "
+    "a partner post, or a crypto marketing announcement, reply ONLY with the word: DUPLICATE\n\n"
+    "STEP 1 — DEDUPLICATION:\n"
     "If RECENTLY PUBLISHED STORIES are listed below, check whether the INCOMING NEWS covers "
-    "the EXACT same technical or market event. If it is a duplicate, reply with ONLY the single word: DUPLICATE\n\n"
-    "STEP 2 — REWRITE (if unique or no cache):\n"
+    "the EXACT same technical or market event. If it is a duplicate or an advertisement, reply with ONLY the single word: DUPLICATE\n\n"
+    "STEP 2 — REWRITE:\n"
     "Rewrite the INCOMING NEWS following these STRICT rules:\n\n"
     "1. LANGUAGE: STRICTLY GLOBAL ENGLISH. Translate any foreign language to fluent, professional English.\n\n"
     "2. CLEANING:\n"
@@ -287,42 +291,37 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
             )
 
         elif len(media_paths) == 1:
-            with open(media_paths[0], "rb") as fh:
-                resp = _requests.post(
-                    f"{base}/sendPhoto",
-                    data={
-                        "chat_id": DEST_CHANNEL,
-                        "caption": caption,
-                        "parse_mode": "HTML",
-                    },
-                    files={"photo": fh},
-                    timeout=30,
-                )
+            file_size = os.path.getsize(media_paths[0])
+            if file_size > 10485760: # 10MB sınırı
+                logger.warning("news_aggregator: Single photo too large (%d bytes), sending text only.", file_size)
+                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+            else:
+                with open(media_paths[0], "rb") as fh:
+                    resp = _requests.post(f"{base}/sendPhoto", data={"chat_id": DEST_CHANNEL, "caption": caption, "parse_mode": "HTML"}, files={"photo": fh}, timeout=30)
 
         else:
+            # Albüm (MediaGroup) durumu
             paths = media_paths[:TG_MAX_MEDIA]
-            media_json: list[dict] = []
-            files: dict[str, Any] = {}
-            for i, p in enumerate(paths):
-                key = f"photo{i}"
-                files[key] = open(p, "rb")
-                item: dict[str, Any] = {"type": "photo", "media": f"attach://{key}"}
-                if i == 0:
-                    item["caption"]    = caption
-                    item["parse_mode"] = "HTML"
-                media_json.append(item)
+            # Önce toplam boyuta bakalım, çok büyükse albümü komple iptal edip sadece metin atalım
+            total_size = sum(os.path.getsize(p) for p in paths)
+            
+            if total_size > 50000000: # 50MB toplam sınır
+                logger.warning("news_aggregator: Album too large (%d bytes), sending text only.", total_size)
+                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+            else:
+                media_json: list[dict] = []
+                files: dict[str, Any] = {}
+                for i, p in enumerate(paths):
+                    key = f"photo{i}"
+                    files[key] = open(p, "rb")
+                    item: dict[str, Any] = {"type": "photo", "media": f"attach://{key}"}
+                    if i == 0:
+                        item["caption"]    = caption
+                        item["parse_mode"] = "HTML"
+                    media_json.append(item)
 
-            resp = _requests.post(
-                f"{base}/sendMediaGroup",
-                data={
-                    "chat_id": DEST_CHANNEL,
-                    "media": json.dumps(media_json),
-                },
-                files=files,
-                timeout=45,
-            )
-            for fh in files.values():
-                fh.close()
+                resp = _requests.post(f"{base}/sendMediaGroup", data={"chat_id": DEST_CHANNEL, "media": json.dumps(media_json)}, files=files, timeout=45)
+                for fh in files.values(): fh.close()
 
         if resp.ok:
             logger.info("news_aggregator: Posted to %s (%d media).", DEST_CHANNEL, len(media_paths))

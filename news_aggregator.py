@@ -50,6 +50,8 @@ def _fallback_rewrite(raw_text: str) -> str:
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
+    "@cointelegraph",
+    "@bitcoinmagazinetelegram",
     "@fin_watch",
     "@yoyodexhaber",
     "@unfolded",
@@ -57,7 +59,6 @@ SOURCE_CHANNELS: list[str] = [
     "@watcherguru",
     "@coinmuhendisihaber",
     "@news_crypto",
-    "@coinbureau",
     "@jrkripto",
 ]
 DEST_CHANNEL      = "@Ledgexs"
@@ -453,6 +454,13 @@ async def _run_news_client() -> None:
         msg = event.message
         raw = (msg.text or "").strip()
         grouped_id: int | None = getattr(msg, "grouped_id", None)
+
+        if channel_name == "cointelegraph":
+            if not raw.upper().startswith("JUST IN:"):
+                return
+
+        if channel_name == "bitcoinmagazinetelegram":
+            raw = re.sub(r'^Bitcoin Magazine\s*\(Twitter/X\)\s*', '', raw, flags=re.IGNORECASE).strip()
 
         try:
             if grouped_id is not None:

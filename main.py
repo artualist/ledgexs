@@ -804,7 +804,7 @@ def _usdt_display(base_units: int) -> str:
 
 def _verify_usdt_payment(expected_amount: int) -> bool:
     w3 = _get_w3("eth")
-    if not PAYMENT_WALLET or w3 is None or not w3.is_connected():
+    if not config.PAYMENT_WALLET or w3 is None or not w3.is_connected():
         return False
     try:
         usdt: Contract = w3.eth.contract(
@@ -2254,7 +2254,7 @@ def _send_premium_info(chat_id: int, uid: int) -> None:
     if db.is_premium(uid):
         _send_membership(chat_id, uid)
         return
-    if not PAYMENT_WALLET:
+    if not config.PAYMENT_WALLET:
         bot.send_message(
             chat_id,
             f"{i18n.t('premium_title', lang)}\n\n"
@@ -3077,7 +3077,7 @@ if __name__ == "__main__":
     if not w3_instances:
         logger.warning("No RPC URLs configured.")
 
-    if not PAYMENT_WALLET:
+    if not config.PAYMENT_WALLET:
         logger.warning("PAYMENT_WALLET not set — premium shows contact-admin message.")
 
     # Initialise optional Twitter/X client (non-fatal if secrets absent)

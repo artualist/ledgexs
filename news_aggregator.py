@@ -327,7 +327,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
                         item["parse_mode"] = "HTML"
                     media_json.append(item)
 
-                resp = _requests.post(f"{base}/sendMediaGroup", data={"chat_id": DEST_CHANNEL, "media": json.dumps(media_json)}, files=files, timeout=45)
+                resp = _requests.post(f"{base}/sendMediaGroup", data={"chat_id": DEST_CHANNEL, "media": json.dumps(media_json), "disable_notification": True}, files=files, timeout=45)
                 for fh in files.values(): fh.close()
 
         if resp.ok:

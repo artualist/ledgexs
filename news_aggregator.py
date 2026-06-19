@@ -89,8 +89,12 @@ AI_COMBINED_PROMPT = (
     "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
-    "1. STARTING MARKER: Use exactly one bold HTML tag: <b>🚨 JUST IN:</b>, <b>⚡ BREAKING:</b>, or <b>📊 MARKET ALERT:</b>\n"
-    "2. LENGTH: MAXIMUM 2 SENTENCES in English.\n"
+    "1. FORMATTING & TAGGING (DECISION LOGIC):\n"
+    "   - You MUST analyze the news content and pick ONE of these tags to start your post:\n"
+    "     a) <b>🚨 JUST IN:</b> (Use for new, timely developments and unexpected announcements.)\n"
+    "     b) <b>⚡ BREAKING:</b> (Use for major, high-impact events that shift market sentiment.)\n"
+    "     c) <b>📊 MARKET ALERT:</b> (Use for price action, technical indicators, or on-chain data alerts.)\n"
+    "2. LENGTH: MAXIMUM 3-5 SENTENCES in English.\n"
     "3. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "4. CLEANING: Remove ALL URLs and redundant source citations.\n"
     

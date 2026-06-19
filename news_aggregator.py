@@ -75,7 +75,6 @@ AI_COMBINED_PROMPT = (
     "   - Sentence 2: The implication (why it matters for DeFi security/market/investments).\n"
     "3. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "4. CLEANING: Remove ALL URLs, social media handles, and redundant source citations (e.g., Bloomberg, Twitter).\n"
-    "5. TAGS: Append 3 highly relevant hashtags at the very end, separated by a single space.\n\n"
     
     "STYLE GUIDE:\n"
     "- Professional, institutional, and punchy. Avoid 'industry-standard' filler phrases like 'the landscape is evolving' or 'this transition reflects'. Cut straight to the value.\n"

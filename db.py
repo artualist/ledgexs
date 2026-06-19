@@ -536,7 +536,7 @@ def get_premium_users_count() -> int:
         rows = c.execute(
             "SELECT premium_expiry FROM users WHERE premium=1"
         ).fetchall()
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     count = 0
     for row in rows:
         exp = row["premium_expiry"]

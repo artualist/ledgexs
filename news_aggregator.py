@@ -41,6 +41,7 @@ SOURCE_CHANNELS: list[str] = [
     "@WatcherGuru",
     "@coinmuhendisihaber",
     "@news_crypto",
+    "@coinbureau",
 ]
 DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG      = "\n\n@Ledgexs"   # appended only to Telegram posts
@@ -67,8 +68,10 @@ AI_COMBINED_PROMPT = (
     "   • DO NOT add any artificial headers like 'JUST IN' or sirens. Just give the raw, cleaned, translated news.\n"
     "   • If the original text naturally starts with strong words like BREAKING or NEW, you may keep their English translation, but DO NOT force them.\n\n"
     "3. FORMAT:\n"
-    "   • Exactly 1–2 sentences. Clear, high-impact, professional.\n"
-    "   • Plain text, single line. No hashtags, no asterisks, no newlines."
+    "   • STRUCTURE: Reflect the complexity of the news. If the content is detailed, use 2 clear paragraphs. "
+    "     If it is a brief update, use a single concise paragraph.\n"
+    "   • PRESERVATION: Do not artificially truncate or cram long information into a single line.\n"
+    "   • Append 3-4 highly relevant cashtags/hashtags at the very end of the last paragraph. Separate them with a space."
 )
 
 # ── Env vars ──────────────────────────────────────────────────────────────────

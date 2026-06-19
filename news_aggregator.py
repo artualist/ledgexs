@@ -78,7 +78,6 @@ AI_COMBINED_PROMPT = (
     "3. FORMAT:\n"
     "   • STRUCTURE: If the content is detailed, use 2 clear paragraphs. If it is a brief update, use a single concise paragraph.\n"
     "   • PRESERVATION: Do not artificially truncate or cram long information. Reflect the complexity of the news.\n"
-    "   • Append 3-4 highly relevant hashtags at the very end of the last paragraph.\n\n"
     "RECENTLY PUBLISHED STORIES:\n"
     "{recent_stories}\n\n"
     "INCOMING NEWS:\n"

@@ -12,7 +12,7 @@ from typing import Any
 
 PAYMENT_TTL_SECONDS: int = 1200  # 20 minutes
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "whale.db")
+DB_PATH = "/data/whale.db"
 _lock = threading.Lock()
 
 

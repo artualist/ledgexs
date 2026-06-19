@@ -13,4 +13,3 @@ ADMIN_IDS: frozenset[int] = frozenset({1076673473})
 
 REQUIRED_CHANNEL: str = "@Ledgexs"
 CHANNEL_INVITE_URL: str = "https://t.me/Ledgexs"
-USDT_DECIMALS: int = 18

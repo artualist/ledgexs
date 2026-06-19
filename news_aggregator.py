@@ -54,7 +54,7 @@ MIN_TEXT_LEN      = 30               # skip media-only / trivially short message
 TWEET_MAX         = 25000
 TWITTER_MAX_MEDIA = 4                # Twitter hard limit
 TG_MAX_MEDIA      = 10               # Telegram sendMediaGroup hard limit
-DEDUP_CACHE_SIZE  = 30               # rolling window of recent summaries
+DEDUP_CACHE_SIZE  = 60               # rolling window of recent summaries
 GROUP_COLLECT_S   = 1.2              # seconds to wait for all album frames to arrive
 MEDIA_DIR         = Path("/tmp/news_media")
 
@@ -63,26 +63,26 @@ MEDIA_DIR         = Path("/tmp/news_media")
 AI_COMBINED_PROMPT = (
     "You are the official English content writer for @Ledgexs, a global crypto intelligence channel.\n\n"
     "CRITICAL RULE: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
-    "CRITICAL RULE: NEVER ALTER NUMERICAL DATA. Price values like '67,000' or '1.5 million' must remain exactly as they appear in the source. Do not remove digits, commas, or decimal points from numbers."
-    "If the incoming news is an advertisement, a promotional article, a 'sponsored by', "
-    "a partner post, or a crypto marketing announcement, reply ONLY with the word: DUPLICATE\n\n"
+    "CRITICAL RULE: NEVER ALTER NUMERICAL DATA. Price values, percentages, and market caps must remain exactly as they appear in the source.\n\n"
     "STEP 1 — DEDUPLICATION:\n"
-    "If RECENTLY PUBLISHED STORIES are listed below, check whether the INCOMING NEWS covers "
-    "(e.g., 'Cointelegraph reports', 'WatcherGuru says'), treat it as a promotional/source-branded post "
-    "and reply ONLY with: DUPLICATE\n\n"
+    "Check if the INCOMING NEWS covers the same core event as the RECENTLY PUBLISHED STORIES provided below. "
+    "Even if the wording, translation, or sentence structure is different, if the CORE EVENT (e.g., meeting postponement, market movement) is the same, reply ONLY with: DUPLICATE\n"
+    "If the INCOMING NEWS mentions a source name (e.g., 'Cointelegraph reports', 'WatcherGuru says') as the subject, treat it as a promotional post and reply ONLY with: DUPLICATE\n\n"
     "STEP 2 — REWRITE:\n"
-    "Rewrite the INCOMING NEWS following these STRICT rules:\n\n"
+    "If the news is not a duplicate, rewrite it following these STRICT rules:\n\n"
     "1. LANGUAGE: STRICTLY GLOBAL ENGLISH. Translate any foreign language to fluent, professional English.\n\n"
     "2. CLEANING:\n"
-    "   • Strip ALL URLs (http://...), markdown links, source names (cointelegraph, WatcherGuru, etc.), and platform names (Twitter/X, Bloomberg).\n"
-    "   • Keep professional news markers like 'JUST IN', 'BREAKING', or 'ALERT' only if they are directly related to the news delivery. "
-    "     Do not add *extra* artificial emojis or sirens. Keep the news style clean but urgent.\n"
-    "   • If the original text naturally starts with strong words like BREAKING or NEW, you may keep their English translation, but DO NOT force them.\n\n"
+    "   • Strip ALL URLs (http://...), markdown links, and redundant platform names (Twitter/X, Bloomberg).\n"
+    "   • KEEP professional news markers like 'JUST IN', 'BREAKING', or 'ALERT' if they exist in the source. "
+    "     Do not add extra artificial emojis or sirens. Keep the style clean but urgent.\n\n"
     "3. FORMAT:\n"
-    "   • STRUCTURE: Reflect the complexity of the news. If the content is detailed, use 2 clear paragraphs. "
-    "     If it is a brief update, use a single concise paragraph.\n"
-    "   • PRESERVATION: Do not artificially truncate or cram long information into a single line.\n"
-    "   • Append 3-4 highly relevant cashtags/hashtags at the very end of the last paragraph. Separate them with a space."
+    "   • STRUCTURE: If the content is detailed, use 2 clear paragraphs. If it is a brief update, use a single concise paragraph.\n"
+    "   • PRESERVATION: Do not artificially truncate or cram long information. Reflect the complexity of the news.\n"
+    "   • Append 3-4 highly relevant hashtags at the very end of the last paragraph.\n\n"
+    "RECENTLY PUBLISHED STORIES:\n"
+    "{recent_stories}\n\n"
+    "INCOMING NEWS:\n"
+    "{incoming_news}"
 )
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
@@ -175,7 +175,7 @@ _dedup_lock  = threading.Lock()
 
 def _cache_add(summary: str) -> None:
     with _dedup_lock:
-        _dedup_cache.append(summary[:200])
+        _dedup_cache.append(summary[:500])
 
 
 def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
@@ -184,23 +184,22 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
 
     with _dedup_lock:
         cache_snapshot = list(_dedup_cache)
+        recent_stories = "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot)) if cache_snapshot else "No recent stories."
 
-    if cache_snapshot:
-        cache_text = "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot))
-        user_msg = (
-            f"RECENTLY PUBLISHED STORIES:\n{cache_text}\n\n"
-            f"INCOMING NEWS:\n{raw_text}"
-        )
-    else:
-        user_msg = f"INCOMING NEWS:\n{raw_text}"
+    # Prompt'u burada dinamik olarak dolduruyoruz
+    formatted_prompt = AI_COMBINED_PROMPT.format(
+        recent_stories=recent_stories,
+        incoming_news=raw_text
+    )
 
     resp = _ai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": AI_COMBINED_PROMPT},
-            {"role": "user",   "content": user_msg},
+            {"role": "system", "content": "You are a news filtering assistant."},
+            {"role": "user",   "content": formatted_prompt}, # Doldurulmuş prompt'u gönderiyoruz
         ],
-        max_tokens=420,
+        temperature=0,
+        max_tokens=600,
     )
     result = (resp.choices[0].message.content or "").strip()
 

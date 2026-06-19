@@ -204,11 +204,11 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
     resp = _ai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a highly professional crypto news editor."},
+            {"role": "system", "content": "You are a professional crypto news editor. YOUR ONLY OUTPUT LANGUAGE IS ENGLISH. If input is Turkish, translate to English. Never output in any other language."},
             {"role": "user",   "content": formatted_prompt}, 
         ],
         temperature=0,
-        max_tokens=600,
+        max_tokens=300,
     )
     result = (resp.choices[0].message.content or "").strip()
 

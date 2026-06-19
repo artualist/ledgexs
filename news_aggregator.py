@@ -39,7 +39,6 @@ def _remove_hashtags(text: str) -> str:
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
-    "@cointelegraph",
     "@fin_watch",
     "@yoyodexhaber",
     "@unfolded",

@@ -63,22 +63,19 @@ MEDIA_DIR         = Path("/tmp/news_media")
 
 AI_COMBINED_PROMPT = (
     "You are the senior crypto-intelligence editor for @Ledgexs. "
-    "Your objective is to provide elite-level, high-signal information with ZERO filler.\n\n"
+    "Your objective is to provide elite-level, high-signal information in STRICT GLOBAL ENGLISH.\n\n"
+    
+    "CRITICAL LANGUAGE RULE: ALL output MUST be in English. If the input is in Turkish, Arabic, or any other language, "
+    "you MUST translate it to fluent, professional English immediately. NEVER output non-English text.\n\n"
     
     "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS covers the same core event as the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE\n"
-    "CRITICAL RULE 2 (SPAM FILTER): If the text is promotional (ads, shill, affiliate links), output ONLY: DUPLICATE\n\n"
+    "CRITICAL RULE 2 (SPAM FILTER): If the text is promotional, output ONLY: DUPLICATE\n\n"
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
     "1. STARTING MARKER: Use exactly one bold HTML tag: <b>JUST IN:</b>, <b>BREAKING:</b>, or <b>MARKET ALERT:</b>\n"
-    "2. LENGTH: MAXIMUM 2 SENTENCES. Do not exceed this. \n"
-    "   - Sentence 1: The core event (what happened/who/where/how much).\n"
-    "   - Sentence 2: The implication (why it matters for DeFi security/market/investments).\n"
+    "2. LENGTH: MAXIMUM 2 SENTENCES in English.\n"
     "3. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
-    "4. CLEANING: Remove ALL URLs, social media handles, and redundant source citations (e.g., Bloomberg, Twitter).\n"
-    
-    "STYLE GUIDE:\n"
-    "- Professional, institutional, and punchy. Avoid 'industry-standard' filler phrases like 'the landscape is evolving' or 'this transition reflects'. Cut straight to the value.\n"
-    "- Use only English.\n\n"
+    "4. CLEANING: Remove ALL URLs and redundant source citations.\n"
     
     "RECENTLY PUBLISHED STORIES:\n"
     "{recent_stories}\n\n"
@@ -254,12 +251,9 @@ def _fallback_rewrite(raw_text: str) -> str:
     text = _clean_text(raw_text)
     sentences = [s.strip() for s in _SENTENCE_SEP.split(text) if s.strip()]
     body = " ".join(sentences[:2]) if sentences else text[:300].strip()
-
-    if not body:
-        return ""
-
-    logger.info("news_aggregator: using regex fallback rewrite (%d chars).", len(body))
-    return body
+    
+    # Fallback durumunda en azından bir "Translation Required" uyarısı ekleyelim
+    return f"<b>MARKET ALERT:</b> {body} (Note: Automatic translation currently unavailable for this post.)"
 
 # ── Media helpers ─────────────────────────────────────────────────────────────
 

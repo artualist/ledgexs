@@ -46,6 +46,7 @@ SOURCE_CHANNELS: list[str] = [
     "@coinmuhendisihaber",
     "@news_crypto",
     "@coinbureau",
+    "@jrkripto",
 ]
 DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG      = "\n\n@Ledgexs"   # appended only to Telegram posts

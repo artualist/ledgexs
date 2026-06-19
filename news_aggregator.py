@@ -30,11 +30,22 @@ from typing import Any
 logger = logging.getLogger("whale_bot.news")
 
 def _remove_hashtags(text: str) -> str:
-    # KRİTİK DÜZELTME: Sadece # ile başlayanları ve $ ile başlayıp SADECE HARF içeren (cashtag) kelimeleri siler.
-    # Rakam içeren finansal verilere ($100, $2.5M vs.) ASLA dokunmaz.
     text = re.sub(r'#\w+', '', text)
     text = re.sub(r'\$[a-zA-Z_]+\b', '', text)
     return text.strip()
+
+def _clean_text(text: str) -> str:
+    text = re.sub(r'https?://\S+|www\.\S+', ' ', text)
+    text = re.sub(r'\[.*?\]\([^)]*\)?', ' ', text)
+    text = re.sub(r'(?<!\d)@\w+', ' ', text)
+    text = _WS_RE.sub(" ", text).strip()
+    return text
+
+def _fallback_rewrite(raw_text: str) -> str:
+    """AI hatası durumunda haberi kaybetmemek için zorunlu temizlik."""
+    clean = _clean_text(raw_text)
+    # Eğer metin hala çok kısaysa veya saçmaysa haber atlanmasın ama etiketlensin
+    return f"<b>MARKET ALERT:</b> {clean[:250]} (Translated to English automatically)"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -51,13 +62,14 @@ SOURCE_CHANNELS: list[str] = [
 ]
 DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG      = "\n\n@Ledgexs"   # appended only to Telegram posts
-MIN_TEXT_LEN      = 30               # skip media-only / trivially short messages
+MIN_TEXT_LEN      = 15               # skip media-only / trivially short messages
 TWEET_MAX         = 25000
 TWITTER_MAX_MEDIA = 4                # Twitter hard limit
 TG_MAX_MEDIA      = 10               # Telegram sendMediaGroup hard limit
 DEDUP_CACHE_SIZE  = 60               # rolling window of recent summaries
 GROUP_COLLECT_S   = 1.2              # seconds to wait for all album frames to arrive
 MEDIA_DIR         = Path("/tmp/news_media")
+_WS_RE          = re.compile(r'\s+')
 
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
@@ -231,29 +243,6 @@ _ASTERISK_RE = re.compile(r"\*{1,4}")
 _PAREN_RE    = re.compile(r"\(\s*(?:Twitter|X|Bloomberg|Reuters|WSJ|FT|CNBC|Forbes|BBC)\s*/?\w*\s*\)", re.IGNORECASE)
 _SOURCE_RE   = re.compile(r"\b(cointelegraph|coindesk|watcherguru|watcher\s*guru|ninjanews|ninja\s*news|unfolded|fin_?watch|bitcoinmagazine|bitcoin\s*magazine|decrypt|theblock|blockworks|cryptoslate|cryptopotato)\b", re.IGNORECASE)
 _SENTENCE_SEP = re.compile(r"(?<=[.!?])\s+")
-
-
-def _clean_text(text: str) -> str:
-    text = _MD_LINK_RE.sub(" ", text)
-    text = _URL_RE.sub(" ", text)
-    
-    text = re.sub(r'(?<!\d)@\w+', ' ', text) 
-    
-    text = _ASTERISK_RE.sub(" ", text)
-    text = _PAREN_RE.sub(" ", text)
-    text = _SOURCE_RE.sub(" ", text)
-    
-    text = _MULTI_WS_RE.sub(" ", text).strip()
-    return text
-
-
-def _fallback_rewrite(raw_text: str) -> str:
-    text = _clean_text(raw_text)
-    sentences = [s.strip() for s in _SENTENCE_SEP.split(text) if s.strip()]
-    body = " ".join(sentences[:2]) if sentences else text[:300].strip()
-    
-    # Fallback durumunda en azından bir "Translation Required" uyarısı ekleyelim
-    return f"<b>MARKET ALERT:</b> {body} (Note: Automatic translation currently unavailable for this post.)"
 
 # ── Media helpers ─────────────────────────────────────────────────────────────
 

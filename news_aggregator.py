@@ -44,7 +44,7 @@ SOURCE_CHANNELS: list[str] = [
     "@yoyodexhaber",
     "@unfolded",
     "@ninjanewstr",
-    "@WatcherGuru",
+    "@watcherguru",
     "@coinmuhendisihaber",
     "@news_crypto",
     "@coinbureau",

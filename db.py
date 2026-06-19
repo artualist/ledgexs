@@ -1,20 +1,9 @@
-"""
-SQLite persistence layer.
-All user data, watchlists, and premium status survive bot restarts.
-"""
-
 import sqlite3
 import os
-import time
 import threading
-from datetime import datetime, timedelta, timezone
-from typing import Any
-
-PAYMENT_TTL_SECONDS: int = 1200  # 20 minutes
 
 DB_PATH = "/data/whale.db"
-_lock = threading.Lock()
-
+_lock = threading.Lock()  # Lock'u en başa aldık
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
@@ -22,6 +11,30 @@ def _conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
+def init_db() -> None:
+    # 1. Klasör yapısını oluştur
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    
+    # 2. Yazma yetkisini kontrol et
+    if not os.access(os.path.dirname(DB_PATH), os.W_OK):
+        print(f"HATA: {os.path.dirname(DB_PATH)} klasörüne yazma yetkin yok!")
+        return
+
+    # 3. Veritabanını başlat
+    with _lock, _conn() as c:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                uid INTEGER PRIMARY KEY,
+                chat_id INTEGER NOT NULL,
+                premium INTEGER DEFAULT 0,
+                premium_expiry TEXT,
+                digest_hour INTEGER DEFAULT NULL,
+                last_digest_date TEXT DEFAULT NULL,
+                language TEXT DEFAULT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+            /* ... diğer CREATE TABLE komutlarını buraya aynen ekle ... */
+        """)
 
 def init_db() -> None:
     with _lock, _conn() as c:

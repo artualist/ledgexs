@@ -62,7 +62,11 @@ SOURCE_CHANNELS: list[str] = [
     "@jrkripto",
 ]
 DEST_CHANNEL      = "@Ledgexs"
-TELEGRAM_SIG      = "\n\n@Ledgexs"   # appended only to Telegram posts
+TELEGRAM_SIG = (
+    "\n\n"
+    "━━━━━━━━━━━━━━━\n"
+    "<b>Ledgexs</b> | 📢 <a href='https://t.me/Ledgexs'>News</a> | 𝕏 <a href='https://x.com/Ledgexs'>X</a> | 🤖 <a href='https://t.me/whale_bot_link'>LX Whale Bot</a>"
+)
 MIN_TEXT_LEN      = 15               # skip media-only / trivially short messages
 TWEET_MAX         = 25000
 TWITTER_MAX_MEDIA = 4                # Twitter hard limit
@@ -85,7 +89,7 @@ AI_COMBINED_PROMPT = (
     "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
-    "1. STARTING MARKER: Use exactly one bold HTML tag: <b>JUST IN:</b>, <b>BREAKING:</b>, or <b>MARKET ALERT:</b>\n"
+    "1. STARTING MARKER: Use exactly one bold HTML tag: <b>🚨 JUST IN:</b>, <b>⚡ BREAKING:</b>, or <b>📊 MARKET ALERT:</b>\n"
     "2. LENGTH: MAXIMUM 2 SENTENCES in English.\n"
     "3. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "4. CLEANING: Remove ALL URLs and redundant source citations.\n"
@@ -266,7 +270,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
         return
 
     base = f"https://api.telegram.org/bot{_BOT_TOKEN}"
-    caption = tg_text + TELEGRAM_SIG
+    caption = f"{tg_text}{TELEGRAM_SIG}"
 
     try:
         if not media_paths:

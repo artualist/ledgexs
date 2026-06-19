@@ -47,10 +47,23 @@ logging.basicConfig(
 logger = logging.getLogger("whale_bot")
 
 # ---------------------------------------------------------------------------
-# Configuration — Eski değişkenler silindi, sadece bot başlatılıyor
+# Configuration Bridge — (Bunu eski sildiğin bloğun yerine yapıştır)
 # ---------------------------------------------------------------------------
 
-bot = telebot.TeleBot(config.BOT_TOKEN, parse_mode="HTML")
+BOT_TOKEN = config.BOT_TOKEN
+PAYMENT_WALLET = config.PAYMENT_WALLET
+PREMIUM_PRICE_CENTS = config.PREMIUM_PRICE_CENTS
+FREE_TIER_LIMIT = config.FREE_TIER_LIMIT
+POLL_INTERVAL = config.POLL_INTERVAL
+DEFAULT_USD_THRESHOLD = config.DEFAULT_USD_THRESHOLD
+PAYMENT_TTL_SECONDS = config.PAYMENT_TTL_SECONDS
+LIFETIME_PREMIUM_USERS = config.LIFETIME_PREMIUM_USERS
+ADMIN_IDS = config.ADMIN_IDS
+REQUIRED_CHANNEL = config.REQUIRED_CHANNEL
+CHANNEL_INVITE_URL = config.CHANNEL_INVITE_URL
+
+# Bot tanımı da eski haline dönebilir, yukarıda BOT_TOKEN'ı eşitlediğimiz için sorun yaratmaz
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 
 # ---------------------------------------------------------------------------
 # Channel membership helpers

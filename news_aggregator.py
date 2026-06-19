@@ -29,6 +29,10 @@ from typing import Any
 
 logger = logging.getLogger("whale_bot.news")
 
+def _remove_hashtags(text: str) -> str:
+    # # ve $ ile başlayan, boşlukla biten ifadeleri temizler
+    return re.sub(r'(#|\$)\w+', '', text).strip()
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
@@ -400,8 +404,12 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
             logger.debug("news_aggregator: media download failed: %s", exc)
 
     try:
-        _post_to_telegram(rewritten, media_paths)
-        _post_to_twitter(rewritten, media_paths)
+        # Telegram için hashtag'leri ayıklıyoruz:
+        clean_tg_text = _remove_hashtags(rewritten)
+        _post_to_telegram(clean_tg_text, media_paths)
+        
+        # Twitter'da kalsın istediğin için orijinali gönderiyoruz:
+        _post_to_twitter(rewritten, media_paths) 
     finally:
         _cleanup_media_dir()
 

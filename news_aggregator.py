@@ -30,8 +30,11 @@ from typing import Any
 logger = logging.getLogger("whale_bot.news")
 
 def _remove_hashtags(text: str) -> str:
-    # # ve $ ile başlayan, boşlukla biten ifadeleri temizler
-    return re.sub(r'(#|\$)\w+', '', text).strip()
+    # KRİTİK DÜZELTME: Sadece # ile başlayanları ve $ ile başlayıp SADECE HARF içeren (cashtag) kelimeleri siler.
+    # Rakam içeren finansal verilere ($100, $2.5M vs.) ASLA dokunmaz.
+    text = re.sub(r'#\w+', '', text)
+    text = re.sub(r'\$[a-zA-Z_]+\b', '', text)
+    return text.strip()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -62,8 +65,8 @@ MEDIA_DIR         = Path("/tmp/news_media")
 
 AI_COMBINED_PROMPT = (
     "You are the official English content writer for @Ledgexs, a global crypto intelligence channel.\n\n"
-    "CRITICAL RULE: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
-    "CRITICAL RULE: NEVER ALTER NUMERICAL DATA. Price values, percentages, and market caps must remain exactly as they appear in the source.\n\n"
+    "CRITICAL RULE 1: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
+    "CRITICAL RULE 2: NEVER ALTER NUMERICAL DATA. Price values, percentages, and market caps MUST remain exactly as they appear.\n\n"
     "STEP 1 — DEDUPLICATION:\n"
     "Check if the INCOMING NEWS covers the same core event as the RECENTLY PUBLISHED STORIES provided below. "
     "Even if the wording, translation, or sentence structure is different, if the CORE EVENT (e.g., meeting postponement, market movement) is the same, reply ONLY with: DUPLICATE\n"
@@ -71,11 +74,11 @@ AI_COMBINED_PROMPT = (
     "STEP 2 — REWRITE:\n"
     "If the news is not a duplicate, rewrite it following these STRICT rules:\n\n"
     "1. LANGUAGE: STRICTLY GLOBAL ENGLISH. Translate any foreign language to fluent, professional English.\n\n"
-    "2. CLEANING:\n"
-    "   • Strip ALL URLs (http://...), markdown links, and redundant platform names (Twitter/X, Bloomberg).\n"
-    "   • KEEP professional news markers like 'JUST IN', 'BREAKING', or 'ALERT' if they exist in the source. "
-    "     Do not add extra artificial emojis or sirens. Keep the style clean but urgent.\n\n"
-    "3. FORMAT:\n"
+    "2. URGENCY MARKERS (MANDATORY):\n"
+    "   • You MUST start the rewritten text with a bold professional marker like **JUST IN:**, **BREAKING:**, or **MARKET ALERT:** depending on the context.\n\n"
+    "3. CLEANING:\n"
+    "   • Strip ALL URLs (http://...), markdown links, and redundant platform names (Twitter/X, Bloomberg).\n\n"
+    "4. FORMAT:\n"
     "   • STRUCTURE: If the content is detailed, use 2 clear paragraphs. If it is a brief update, use a single concise paragraph.\n"
     "   • PRESERVATION: Do not artificially truncate or cram long information. Reflect the complexity of the news.\n"
     "RECENTLY PUBLISHED STORIES:\n"
@@ -185,7 +188,6 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
         cache_snapshot = list(_dedup_cache)
         recent_stories = "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot)) if cache_snapshot else "No recent stories."
 
-    # Prompt'u burada dinamik olarak dolduruyoruz
     formatted_prompt = AI_COMBINED_PROMPT.format(
         recent_stories=recent_stories,
         incoming_news=raw_text
@@ -194,8 +196,8 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
     resp = _ai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a news filtering assistant."},
-            {"role": "user",   "content": formatted_prompt}, # Doldurulmuş prompt'u gönderiyoruz
+            {"role": "system", "content": "You are a highly professional crypto news editor."},
+            {"role": "user",   "content": formatted_prompt}, 
         ],
         temperature=0,
         max_tokens=600,
@@ -236,18 +238,12 @@ def _clean_text(text: str) -> str:
     text = _MD_LINK_RE.sub(" ", text)
     text = _URL_RE.sub(" ", text)
     
-    # Mention'ları sadece "kelime sınırı" olan yerlerden sil (sayısal veriye dokunma)
     text = re.sub(r'(?<!\d)@\w+', ' ', text) 
     
-    # Diğer temizlikler
     text = _ASTERISK_RE.sub(" ", text)
     text = _PAREN_RE.sub(" ", text)
-    
-    # SOURCE_RE'yi kullanırken kelime sınırlarına dikkat et
     text = _SOURCE_RE.sub(" ", text)
     
-    # Sayısal karakterleri (0-9), nokta (.) ve virgül (,) içeren blokları 
-    # temizlemeden sadece boşlukları düzeltiyoruz:
     text = _MULTI_WS_RE.sub(" ", text).strip()
     return text
 
@@ -301,7 +297,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
 
         elif len(media_paths) == 1:
             file_size = os.path.getsize(media_paths[0])
-            if file_size > 10485760: # 10MB sınırı
+            if file_size > 10485760: 
                 logger.warning("news_aggregator: Single photo too large (%d bytes), sending text only.", file_size)
                 resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
             else:
@@ -309,12 +305,10 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
                     resp = _requests.post(f"{base}/sendPhoto", data={"chat_id": DEST_CHANNEL, "caption": caption, "parse_mode": "HTML"}, files={"photo": fh}, timeout=30)
 
         else:
-            # Albüm (MediaGroup) durumu
             paths = media_paths[:TG_MAX_MEDIA]
-            # Önce toplam boyuta bakalım, çok büyükse albümü komple iptal edip sadece metin atalım
             total_size = sum(os.path.getsize(p) for p in paths)
             
-            if total_size > 50000000: # 50MB toplam sınır
+            if total_size > 50000000: 
                 logger.warning("news_aggregator: Album too large (%d bytes), sending text only.", total_size)
                 resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
             else:
@@ -413,11 +407,9 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
             logger.debug("news_aggregator: media download failed: %s", exc)
 
     try:
-        # Telegram için hashtag'leri ayıklıyoruz:
         clean_tg_text = _remove_hashtags(rewritten)
         _post_to_telegram(clean_tg_text, media_paths)
         
-        # Twitter'da kalsın istediğin için orijinali gönderiyoruz:
         _post_to_twitter(rewritten, media_paths) 
     finally:
         _cleanup_media_dir()

@@ -3139,12 +3139,21 @@ if __name__ == "__main__":
     except Exception as _news_exc:
         logger.warning("News aggregator failed to start (non-fatal): %s", _news_exc)
 
+    logger.info("Bot is starting up...")
+
+    # Webhook'u temizle ve mevcut polling işlemlerini durdur
+    try:
+        bot.remove_webhook()
+    except Exception as e:
+        logger.warning(f"Webhook removal failed: {e}")
+    
+    # Basit bir bekleme ekle (Railway konteynerinin tam hazır olması için)
+    time.sleep(5)
     logger.info("Bot is running…")
 
-    bot.remove_webhook()
     while True:
         try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=5, logger_level=logging.WARNING)
+            bot.infinity_polling(timeout=60, long_polling_timeout=60, logger_level=logging.WARNING)
         except Exception as _poll_exc:
             logger.error("Polling crashed: %s — restarting in 5 s…", _poll_exc)
             time.sleep(5)

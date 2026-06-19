@@ -1180,7 +1180,7 @@ def _monitor_loop() -> None:
     logger.info("Whale monitor thread started (concurrent EVM scanner, workers=20).")
     last_seen: dict[str, int] = {}
     while True:
-        time.sleep(POLL_INTERVAL)
+        time.sleep(config.POLL_INTERVAL)
         try:
             subscribers = db.get_all_subscribers()
         except Exception as exc:
@@ -1199,7 +1199,7 @@ def _monitor_loop() -> None:
             futs[_CHAIN_EXECUTOR.submit(
                 _check_whale_activity, chain_id, ca, subscribers[k], last_seen
             )] = k
-        for fut in as_completed(futs, timeout=max(POLL_INTERVAL - 2, 5)):
+        for fut in as_completed(futs, timeout=max(config.POLL_INTERVAL - 2, 5)):
             k = futs[fut]
             try:
                 fut.result()
@@ -1362,7 +1362,7 @@ def _sol_monitor_loop() -> None:
 
     last_sol_sig: dict[str, str] = {}
     while True:
-        time.sleep(POLL_INTERVAL)
+        time.sleep(config.POLL_INTERVAL)
         if not _sol_connected:
             continue
         try:
@@ -1552,7 +1552,7 @@ def _sui_monitor_loop() -> None:
 
     last_sui_cursor: dict[str, Any] = {}
     while True:
-        time.sleep(POLL_INTERVAL)
+        time.sleep(config.POLL_INTERVAL)
         if not _sui_connected:
             continue
         try:
@@ -1687,7 +1687,7 @@ def _tron_monitor_loop() -> None:
 
     last_tron_ts: dict[str, int] = {}
     while True:
-        time.sleep(POLL_INTERVAL)
+        time.sleep(config.POLL_INTERVAL)
         if not _tron_connected:
             continue
         try:

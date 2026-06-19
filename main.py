@@ -3140,6 +3140,8 @@ if __name__ == "__main__":
         logger.warning("News aggregator failed to start (non-fatal): %s", _news_exc)
 
     logger.info("Bot is running…")
+
+    bot.remove_webhook()
     while True:
         try:
             bot.infinity_polling(timeout=60, long_polling_timeout=5, logger_level=logging.WARNING)

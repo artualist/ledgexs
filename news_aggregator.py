@@ -294,6 +294,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
                     "text": caption,
                     "parse_mode": "HTML",
                     "disable_web_page_preview": True,
+                    "disable_notification": True,
                 },
                 timeout=15,
             )
@@ -302,10 +303,10 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
             file_size = os.path.getsize(media_paths[0])
             if file_size > 10485760: 
                 logger.warning("news_aggregator: Single photo too large (%d bytes), sending text only.", file_size)
-                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_notification": True, "disable_web_page_preview": True}, timeout=15)
             else:
                 with open(media_paths[0], "rb") as fh:
-                    resp = _requests.post(f"{base}/sendPhoto", data={"chat_id": DEST_CHANNEL, "caption": caption, "parse_mode": "HTML"}, files={"photo": fh}, timeout=30)
+                    resp = _requests.post(f"{base}/sendPhoto", data={"chat_id": DEST_CHANNEL, "caption": caption, "disable_notification": True, "parse_mode": "HTML"}, files={"photo": fh}, timeout=30)
 
         else:
             paths = media_paths[:TG_MAX_MEDIA]
@@ -313,7 +314,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
             
             if total_size > 50000000: 
                 logger.warning("news_aggregator: Album too large (%d bytes), sending text only.", total_size)
-                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=15)
+                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_notification": True, "disable_web_page_preview": True}, timeout=15)
             else:
                 media_json: list[dict] = []
                 files: dict[str, Any] = {}
@@ -341,6 +342,7 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
                         "text": caption,
                         "parse_mode": "HTML",
                         "disable_web_page_preview": True,
+                        "disable_notification": True,
                     },
                     timeout=15,
                 )

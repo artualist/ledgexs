@@ -408,11 +408,18 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
+    # ── KRİTİK DEĞİŞİKLİK BURADA ──────────────────────────────────────────────
     try:
         clean_tg_text = _remove_hashtags(rewritten)
+        # Telegram'a her halükarda (medyalı veya medyasız) gönderiyoruz
         _post_to_telegram(clean_tg_text, media_paths)
         
-        _post_to_twitter(rewritten, media_paths) 
+        # Twitter'a YALNIZCA listede indirilen bir medya varsa gönderiyoruz
+        if media_paths:
+            _post_to_twitter(rewritten, media_paths)
+        else:
+            logger.info("news_aggregator: Text-only news detected. Sent to Telegram, skipped for X.")
+            
     finally:
         _cleanup_media_dir()
 

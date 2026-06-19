@@ -153,8 +153,8 @@ def admin_users_list(message: types.Message):
         )
 
 
-USDT_CA = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
-USDT_DECIMALS = 6
+USDT_CA = "0x55d398326f99059fF775485246999027B3197955"
+USDT_DECIMALS = 18
 
 # ── Outbound keep-alive ─────────────────────────────────────────────────────
 _KEEPALIVE_INTERVAL = 180  # seconds (3 minutes)
@@ -816,7 +816,7 @@ def _usdt_display(base_units: int) -> str:
 
 
 def _verify_usdt_payment(expected_amount: int) -> bool:
-    w3 = _get_w3("eth")
+    w3 = _get_w3("bsc") 
     if not config.PAYMENT_WALLET or w3 is None or not w3.is_connected():
         return False
     try:
@@ -833,7 +833,6 @@ def _verify_usdt_payment(expected_amount: int) -> bool:
     except Exception as exc:
         logger.warning("Payment verify error: %s", exc)
         return False
-
 
 # ---------------------------------------------------------------------------
 # Keyboard builders

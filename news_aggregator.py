@@ -216,11 +216,14 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
 # ── Text helpers ──────────────────────────────────────────────────────────────
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
-_MULTI_WS_RE = re.compile(r"\s{2,}")
+_MULTI_SPACES_RE = re.compile(r"[ \t]{2,}")
+_MULTI_NL_RE = re.compile(r"\n{3,}")
 
 def _strip_html(text: str) -> str:
     clean = _HTML_TAG_RE.sub("", text)
-    return _MULTI_WS_RE.sub(" ", clean).strip()
+    clean = _MULTI_SPACES_RE.sub(" ", clean)
+    clean = _MULTI_NL_RE.sub("\n\n", clean)
+    return clean.strip()
 
 # ── Fallback cleaning patterns ────────────────────────────────────────────────
 

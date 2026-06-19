@@ -15,7 +15,7 @@ import requests
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import telebot

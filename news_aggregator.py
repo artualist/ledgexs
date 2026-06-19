@@ -61,7 +61,6 @@ MEDIA_DIR         = Path("/tmp/news_media")
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
 AI_COMBINED_PROMPT = (
-    AI_COMBINED_PROMPT = (
     "You are the official English content writer for @Ledgexs, a global crypto intelligence channel.\n\n"
     "CRITICAL RULE: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
     "If the incoming news is an advertisement, a promotional article, a 'sponsored by', "

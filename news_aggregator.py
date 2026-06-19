@@ -73,7 +73,7 @@ AI_COMBINED_PROMPT = (
     "If the news is not a duplicate, rewrite it following these STRICT rules:\n\n"
     "1. LANGUAGE: STRICTLY GLOBAL ENGLISH. Translate any foreign language to fluent, professional English.\n\n"
     "2. URGENCY MARKERS (MANDATORY):\n"
-    "   • You MUST start the rewritten text with a bold professional marker like **JUST IN:**, **BREAKING:**, or **MARKET ALERT:** depending on the context.\n\n"
+    "   • You MUST start the rewritten text with an HTML bold professional marker like <b>JUST IN:</b>, <b>BREAKING:</b>, or <b>MARKET ALERT:</b> depending on the context. Do NOT use markdown asterisks (**).\n\n"
     "3. CLEANING:\n"
     "   • Strip ALL URLs (http://...), markdown links, and redundant platform names (Twitter/X, Bloomberg) from the final output.\n\n"
     "4. FORMAT:\n"

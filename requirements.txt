@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+web3
+requests
+telethon
+openai
+tweepy

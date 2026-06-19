@@ -63,6 +63,7 @@ MEDIA_DIR         = Path("/tmp/news_media")
 AI_COMBINED_PROMPT = (
     "You are the official English content writer for @Ledgexs, a global crypto intelligence channel.\n\n"
     "CRITICAL RULE: REJECT ADVERTISEMENTS AND SPONSORED CONTENT.\n"
+    "CRITICAL RULE: NEVER ALTER NUMERICAL DATA. Price values like '67,000' or '1.5 million' must remain exactly as they appear in the source. Do not remove digits, commas, or decimal points from numbers."
     "If the incoming news is an advertisement, a promotional article, a 'sponsored by', "
     "a partner post, or a crypto marketing announcement, reply ONLY with the word: DUPLICATE\n\n"
     "STEP 1 — DEDUPLICATION:\n"

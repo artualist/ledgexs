@@ -464,6 +464,8 @@ async def _run_news_client() -> None:
         raw = (msg.text or "").strip()
         grouped_id: int | None = getattr(msg, "grouped_id", None)
 
+        channel_name = event.chat.username if event.chat and hasattr(event.chat, 'username') else "unknown"
+
         if channel_name == "cointelegraph":
             if not raw.upper().startswith("JUST IN:"):
                 return

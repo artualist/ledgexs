@@ -509,16 +509,20 @@ TWITTER_TARGET_MAPPING = {
 }
 
 async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
+    # Sadece _twitter_v2 kontrolü yeterli
     if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
         return
 
     twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
     
     try:
+        # 1. En son tweeti al
         tweets = _twitter_v2.get_users_tweets(id=twitter_id, max_results=1)
         if not tweets.data: return
         
         last_tweet = tweets.data[0]
+        
+        # 2. GPT'den cevabı al
         prompt = (
             f"News Content: {news_context[:300]}\n"
             f"Latest Tweet from {tg_username}: '{last_tweet.text}'\n"
@@ -531,20 +535,13 @@ async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
         reply_text = await _call_gpt_for_analysis(prompt)
         await asyncio.sleep(random.randint(60, 180)) 
         
-        # v1.1 API kullanarak yanıt atma (Daha stabil yöntem)
-        # _twitter_v1 burada tweepy.API(auth) olarak tanımlı
-        try:
-            status = _twitter_v1.update_status(
-                status=reply_text,
-                in_reply_to_status_id=last_tweet.id,
-                auto_populate_reply_metadata=True
-            )
-            logger.info(f"Auto-commented on {tg_username}'s tweet (v1.1 API).")
-        except Exception as v1_err:
-            # Eğer v1.1 de hata verirse, v2'yi deneyelim (fallback)
-            logger.warning(f"v1.1 failed, trying v2: {v1_err}")
-            _twitter_v2.create_tweet(text=reply_text, in_reply_to_tweet_id=str(last_tweet.id))
-            logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API).")
+        # 3. TEK YOL: v2 API create_tweet
+        # in_reply_to_tweet_id parametresi ile direkt cevap atıyoruz.
+        response = _twitter_v2.create_tweet(
+            text=reply_text, 
+            in_reply_to_tweet_id=last_tweet.id
+        )
+        logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API) — Success!")
 
     except Exception as e:
         logger.warning(f"Twitter auto-comment failed: {e}")

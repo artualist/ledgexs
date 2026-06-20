@@ -159,7 +159,7 @@ AI_COMBINED_PROMPT = (
     "     b) <b>⚡ BREAKING:</b> (Use for major, high-impact events that shift market sentiment.)\n"
     "     c) <b>📊 MARKET ALERT:</b> (Use for price action, technical indicators, or on-chain data alerts.)\n"
     "2. LENGTH: MAXIMUM 1-2 SENTENCES in English.\n"
-    "3. AI INSIGHT (MAXIMUM 1-2 SENTENCES): Provide a short, professional analysis on how this impacts the market or the asset.\n"
+    "3. AI INSIGHT (MAXIMUM 1-2 SENTENCES): Provide a short, professional analysis on how this impacts the market or the asset. DO NOT use any headers, labels, or titles for this section. Simply provide the analysis as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and redundant source citations.\n"
     

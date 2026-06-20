@@ -79,8 +79,14 @@ AI_COMBINED_PROMPT = (
     
     "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS reports the same event, geopolitical incident, or market movement as any of the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE. "
     "BE STRICT: If the core event is the same (e.g., Strait of Hormuz closure), it is a duplicate, even if the wording or source is different.\n\n"
-    "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
-    "Analyze the provided text. If it is NOT a professional crypto news/market update, return ONLY the word 'SKIP'. If it is a news, rewrite it in English, keeping it under 300 characters, professional tone."
+    "CRITICAL RULE 2 (SPAM FILTER): Output ONLY the word SKIP if the message contains NO actual news or factual information whatsoever — "
+    "for example a pure giveaway announcement, a pure 'subscribe to our channel' call-to-action with no news, or a pure paid advertisement. "
+    "DO NOT skip a message for any of the following reasons — these are all normal and expected in crypto news feeds:\n"
+    "  • The message starts or ends with the channel's own name or Telegram/Twitter handle.\n"
+    "  • The message contains URLs or links (they will be removed in the rewrite step).\n"
+    "  • The message mentions any company, project, token, protocol, exchange, government body, or public figure by name.\n"
+    "  • The message is written in Turkish, Arabic, or another language (translate it instead).\n"
+    "RULE: If there is at least ONE factual claim — a price, an event, a decision, a statement by a person or organisation — it is news. Rewrite it.\n\n"
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
     "1. FORMATTING & TAGGING (DECISION LOGIC):\n"

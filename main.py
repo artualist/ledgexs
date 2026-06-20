@@ -3141,6 +3141,13 @@ if __name__ == "__main__":
     except Exception as _news_exc:
         logger.warning("News aggregator failed to start (non-fatal): %s", _news_exc)
 
+    # ── Whale Tracker (isolated — any failure here is non-fatal) ─────────────
+    try:
+        import whale_tracker
+        whale_tracker.start_whale_tracker()
+    except Exception as _whale_exc:
+        logger.warning("Whale tracker failed to start (non-fatal): %s", _whale_exc)
+
     logger.info("Bot is starting up...")
 
     # Webhook'u temizle ve mevcut polling işlemlerini durdur

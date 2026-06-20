@@ -23,11 +23,59 @@ import re
 import shutil
 import threading
 import time
+import ccxt
 from collections import deque
 from pathlib import Path
 from typing import Any
+from functools import partial
 
 logger = logging.getLogger("whale_bot.news")
+
+async def _get_trending_coins() -> list[str]:
+    try:
+        # CoinGecko'nun public API'sinden trendleri çeker
+        resp = _requests.get("https://api.coingecko.com/api/v3/search/trending", timeout=10)
+        data = resp.json()
+        # İlk 3 trend olan coinin sembolünü al
+        return [coin['item']['symbol'].upper() for coin in data['coins'][:3]]
+    except Exception as e:
+        logger.warning(f"Trend fetch failed: {e}")
+        return ["BTC", "ETH", "SOL"] # API patlarsa yedek liste
+
+async def _get_market_data(coin: str) -> str:
+    try:
+        # Binance üzerinden veriyi çek
+        exchange = ccxt.binance()
+        ticker = exchange.fetch_ticker(f"{coin}/USDT")
+        ohlcv = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
+        
+        # Yapay zekanın anlayacağı şekilde veriyi metne döküyoruz
+        price = ticker['last']
+        change = ticker['percentage']
+        volume = ticker['baseVolume']
+        
+        data_summary = (
+            f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | "
+            f"24h Volume: {volume} | "
+            f"Recent Trend: Last 5 candles (4h) closing prices: {[c[4] for c in ohlcv]}"
+        )
+        return data_summary
+    except Exception as e:
+        logger.warning(f"Market data fetch failed for {coin}: {e}")
+        return f"Market data for {coin} is currently unavailable due to API error."
+
+async def _call_gpt_for_analysis(prompt: str) -> str:
+    global _ai_client
+    if _ai_client is None:
+        _ai_client = _make_ai_client() # Hata varsa tekrar dene
+        if _ai_client is None: return "AI service unavailable."
+
+    resp = _ai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7
+    )
+    return (resp.choices[0].message.content or "").strip()
 
 def _remove_hashtags(text: str) -> str:
     text = re.sub(r'#\w+', '', text)
@@ -103,6 +151,16 @@ AI_COMBINED_PROMPT = (
     "{recent_stories}\n\n"
     "INCOMING NEWS:\n"
     "{incoming_news}"
+)
+
+MARKET_INSIGHT_PROMPT = (
+    "You are a professional crypto analyst for @Ledgexs. Create a market insight post for a trending token.\n\n"
+    "FORMAT RULES:\n"
+    "1. TITLE: Start with a catchy, bold headline in ALL CAPS (e.g., 🚀 $MYX EXPLOSIVE ON-CHAIN ACTIVITY!)\n"
+    "2. THE EVENT (Max 3 sentences): Explain the specific trigger (huge wallet move, price pump/dump, or protocol update).\n"
+    "3. ANALYSIS (Max 3 sentences): Provide a sharp, professional insight on potential next moves.\n"
+    "4. LANGUAGE: Professional English.\n\n"
+    "DATA PROVIDED:\n{data}"
 )
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
@@ -418,6 +476,36 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
     finally:
         _cleanup_media_dir()
 
+async def _periodic_market_analysis(tg_client):
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            await asyncio.sleep(14400) 
+            trending_coins = await _get_trending_coins()
+            
+            for coin in trending_coins:
+                market_data = await loop.run_in_executor(None, partial(_get_market_data_sync, coin))
+                prompt = MARKET_INSIGHT_PROMPT.format(data=market_data)
+                analysis_text = await _call_gpt_for_analysis(prompt)
+    
+                final_message = f"{analysis_text}{TELEGRAM_SIG}"
+                await tg_client.send_message('@Ledgexs', final_message, parse_mode='html')
+    
+                await asyncio.sleep(5)
+
+def _get_market_data_sync(coin: str) -> str:
+    # Bu senkron bir fonksiyon, run_in_executor bunu rahatça çalıştırır
+    try:
+        exchange = ccxt.binance()
+        ticker = exchange.fetch_ticker(f"{coin}/USDT")
+        ohlcv = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
+        price = ticker['last']
+        change = ticker['percentage']
+        volume = ticker['baseVolume']
+        return f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | Volume: {volume} | Recent Trend: {[c[4] for c in ohlcv]}"
+    except Exception as e:
+        return f"Market data for {coin} unavailable: {e}"
+
 # ── Telethon async client ─────────────────────────────────────────────────────
 
 async def _run_news_client() -> None:
@@ -442,6 +530,8 @@ async def _run_news_client() -> None:
         retry_delay=5,            # Denemeler arası 5 saniye beklesin
         auto_reconnect=True       # Ağ gelince otomatik yeniden bağlansın
     )
+
+    asyncio.create_task(_periodic_market_analysis(client))
 
     pending_groups: dict[int, list[Any]] = {}
     pending_tasks:  dict[int, asyncio.Task] = {}  # type: ignore[type-arg]

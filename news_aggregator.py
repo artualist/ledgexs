@@ -95,7 +95,6 @@ async def _call_gpt_for_analysis(prompt: str) -> str:
 
 def _remove_hashtags(text: str) -> str:
     text = re.sub(r'#\w+', '', text)
-    text = re.sub(r'\$[a-zA-Z_]+\b', '', text)
     return text.strip()
 
 def _clean_text(text: str) -> str:

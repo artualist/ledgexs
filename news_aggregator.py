@@ -552,8 +552,17 @@ async def _run_news_client() -> None:
 
     @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
     async def _on_new_message(event: events.NewMessage.Event) -> None:
+        # Chat bilgisini garantili şekilde al
         chat = await event.get_chat()
-        username = getattr(chat, 'username', 'unknown')
+        username = getattr(chat, 'username', None)
+        
+        if not username:
+            try:
+                full_chat = await event.client.get_entity(event.chat_id)
+                username = getattr(full_chat, 'username', 'unknown')
+            except:
+                username = 'unknown'
+
         msg = event.message
         raw = (msg.text or "").strip()
         grouped_id = getattr(msg, "grouped_id", None)
@@ -578,7 +587,7 @@ async def _run_news_client() -> None:
     finally:
         for task in pending_tasks.values(): task.cancel()
         await client.disconnect()
-
+        
 # ── Thread entry-point ────────────────────────────────────────────────────────
 
 def _news_thread_target() -> None:

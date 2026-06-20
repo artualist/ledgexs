@@ -65,7 +65,7 @@ _TRON_RPC    = os.environ.get("TRON_RPC_URL", "")
 
 # ── Channels & signature ──────────────────────────────────────────────────────
 
-WHALE_CHANNEL = "@LedgexsWhaleChannel"
+WHALE_CHANNEL = "@LedgexsWhale"
 NEWS_CHANNEL  = "@Ledgexs"
 
 WHALE_SIG = (
@@ -386,7 +386,7 @@ def notify_transfer(
 
     main.py's _check_whale_activity, _sol_check_token, etc. can call this at
     the end of each detected transfer.  whale_tracker will apply THRESHOLDS
-    and fire an alert to @LedgexsWhaleChannel if the transfer qualifies.
+    and fire an alert to @LedgexsWhale if the transfer qualifies.
 
     This path is additive — it runs alongside whale_tracker's own scan loops.
     """
@@ -764,7 +764,7 @@ _AD_NEWS = (
     "Our on-chain monitor catches the biggest BTC, ETH, SOL and altcoin "
     "movements the instant they confirm on-chain.\n\n"
     "🆓 Free to use — no subscription needed.\n"
-    "📲 Whale Alerts 👉 <a href='https://t.me/LedgexsWhaleChannel'>@LedgexsWhaleChannel</a>\n"
+    "📲 Whale Alerts 👉 <a href='https://t.me/LedgexsWhale'>@LedgexsWhale</a>\n"
     "🤖 Bot 👉 <a href='https://t.me/LedgexsBot'>@LedgexsBot</a>"
 )
 

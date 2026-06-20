@@ -447,25 +447,17 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
     if len(raw_text.strip()) < MIN_TEXT_LEN:
         return
 
-    # 1. Önce AI'dan rewrite işlemini iste
+    # 1. AI Rewrite ve Duplicate Kontrolü
     try:
         rewritten = _ai_dedup_and_rewrite(raw_text)
-        # Eğer AI 'DUPLICATE' dönerse (yani None), buraya girer ve fonksiyon biter.
-        # Cache'e eklenmez, dolayısıyla paylaşılmaz.
-        if rewritten is None:
+        if rewritten is None:  # Duplicate ise hiçbir şey yapmadan çık
             return
-            
-        if len(rewritten.strip()) < 5:
-            raise RuntimeError(f"AI output too short: {rewritten!r}")
-            
     except Exception as exc:
-        logger.warning("news_aggregator: AI call failed (%s) — using fallback.", exc)
+        logger.warning("news_aggregator: AI failed (%s) — using fallback.", exc)
         rewritten = _fallback_rewrite(raw_text)
-        if not rewritten:
-            logger.warning("news_aggregator: fallback also empty — dropping message.")
-            return
+        if not rewritten: return
 
-    # 2. Medyayı indir (Buraya kadar geldiyseniz, haber DUPLICATE değildir)
+    # 2. Medyayı indir (Sadece Duplicate değilse buraya gelir)
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
@@ -476,7 +468,7 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
-    # 3. Paylaşımı yap
+    # 3. Paylaşım ve Cache Güncelleme
     try:
         clean_tg_text = _remove_hashtags(rewritten)
         _post_to_telegram(clean_tg_text, media_paths)
@@ -486,8 +478,7 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
         else:
             logger.info("news_aggregator: Text-only news sent to Telegram.")
             
-        # 4. KRİTİK NOKTA: Haber başarıyla paylaşıldıktan SONRA cache'e ekle.
-        # Böylece sadece senin yayınladığın içerik 'geçmiş' olarak işaretlenir.
+        # Başarıyla paylaşıldıktan SONRA cache'e ekle
         _cache_add(_strip_html(rewritten))
             
     finally:

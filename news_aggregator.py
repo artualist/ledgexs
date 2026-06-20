@@ -153,6 +153,7 @@ AI_COMBINED_PROMPT = (
     "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS reports the same event, geopolitical incident, or market movement as any of the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE. "
     "BE STRICT: If the core event is the same (e.g., Strait of Hormuz closure), it is a duplicate, even if the wording or source is different.\n\n"
     "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
+    "Analyze the provided text. If it is NOT a professional crypto news/market update, return ONLY the word 'SKIP'. If it is a news, rewrite it in English, keeping it under 300 characters, professional tone."
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
     "1. FORMATTING & TAGGING (DECISION LOGIC):\n"
@@ -446,7 +447,9 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 # ── Core news handler ─────────────────────────────────────────────────────────
 
 async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any, source_username: str) -> None:
-    if len(raw_text.strip()) < MIN_TEXT_LEN:
+    # 0. Temel filtreleme
+    if len(raw_text) < 20:
+        logger.info(f"Ignored short/invalid news from {source_username}")
         return
 
     # 1. AI Rewrite ve Duplicate Kontrolü
@@ -459,7 +462,12 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any, sourc
         rewritten = _fallback_rewrite(raw_text)
         if not rewritten: return
 
-    # 2. Medyayı indir
+    # 2. SKIP Kontrolü (Düzeltildi: rewritten değişkenini kullanıyoruz)
+    if rewritten.strip().upper() == "SKIP":
+        logger.info(f"Skipping non-news content from {source_username}")
+        return
+
+    # 3. Medyayı indir
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
@@ -470,7 +478,7 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any, sourc
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
-    # 3. Paylaşım ve Cache Güncelleme
+    # 4. Paylaşım ve Cache Güncelleme
     try:
         clean_tg_text = _remove_hashtags(rewritten)
         _post_to_telegram(clean_tg_text, media_paths)
@@ -566,22 +574,15 @@ async def _run_news_client() -> None:
 
     @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
     async def _on_new_message(event: events.NewMessage.Event) -> None:
-        # Chat bilgisini garantili şekilde al
-        chat = await event.get_chat()
-        username = getattr(chat, 'username', None)
-        
-        if not username:
-            try:
-                full_chat = await event.client.get_entity(event.chat_id)
-                username = getattr(full_chat, 'username', 'unknown')
-            except:
-                username = 'unknown'
-
-        msg = event.message
-        raw = (msg.text or "").strip()
-        grouped_id = getattr(msg, "grouped_id", None)
-        
         try:
+            chat = await event.get_chat()
+            # None kontrolünü garantiye al
+            username = getattr(chat, 'username', 'unknown') or 'unknown'
+            
+            msg = event.message
+            raw = (msg.text or "").strip()
+            grouped_id = getattr(msg, "grouped_id", None)
+        
             if grouped_id is not None:
                 if grouped_id not in pending_groups: pending_groups[grouped_id] = []
                 pending_groups[grouped_id].append(msg)

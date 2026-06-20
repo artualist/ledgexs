@@ -32,85 +32,6 @@ from functools import partial
 
 logger = logging.getLogger("whale_bot.news")
 
-async def _get_trending_coins() -> list[str]:
-    try:
-        # CoinGecko'nun public API'sinden trendleri çeker
-        resp = _requests.get("https://api.coingecko.com/api/v3/search/trending", timeout=10)
-        data = resp.json()
-        # İlk 3 trend olan coinin sembolünü al
-        return [coin['item']['symbol'].upper() for coin in data['coins'][:3]]
-    except Exception as e:
-        logger.warning(f"Trend fetch failed: {e}")
-        return ["BTC", "ETH", "SOL"] # API patlarsa yedek liste
-
-async def _get_market_data(coin: str) -> str:
-    try:
-        # Binance üzerinden veriyi çek
-        exchange = ccxt.binance()
-        ticker = exchange.fetch_ticker(f"{coin}/USDT")
-        ohlcv = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
-        
-        # Yapay zekanın anlayacağı şekilde veriyi metne döküyoruz
-        price = ticker['last']
-        change = ticker['percentage']
-        volume = ticker['baseVolume']
-        
-        data_summary = (
-            f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | "
-            f"24h Volume: {volume} | "
-            f"Recent Trend: Last 5 candles (4h) closing prices: {[c[4] for c in ohlcv]}"
-        )
-        return data_summary
-    except Exception as e:
-        logger.warning(f"Market data fetch failed for {coin}: {e}")
-        return f"Market data for {coin} is currently unavailable due to API error."
-
-async def _periodic_market_analysis(tg_client):
-    while True:
-        try:
-            await asyncio.sleep(14400) 
-            trending_coins = await _get_trending_coins()
-            for coin in trending_coins:
-                loop = asyncio.get_running_loop()
-                market_data = await _get_market_data(coin)
-                prompt = MARKET_INSIGHT_PROMPT.format(data=market_data)
-                analysis_text = await _call_gpt_for_analysis(prompt)
-                await tg_client.send_message('@Ledgexs', f"{analysis_text}{TELEGRAM_SIG}", parse_mode='html')
-                await asyncio.sleep(5)
-        except Exception as e:
-            logger.warning(f"Periodic analysis error: {e}")
-            await asyncio.sleep(60)
-
-async def _call_gpt_for_analysis(prompt: str) -> str:
-    global _ai_client
-    if _ai_client is None:
-        _ai_client = _make_ai_client() # Hata varsa tekrar dene
-        if _ai_client is None: return "AI service unavailable."
-
-    resp = _ai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7
-    )
-    return (resp.choices[0].message.content or "").strip()
-
-def _remove_hashtags(text: str) -> str:
-    text = re.sub(r'#\w+', '', text)
-    return text.strip()
-
-def _clean_text(text: str) -> str:
-    text = re.sub(r'https?://\S+|www\.\S+', ' ', text)
-    text = re.sub(r'\[.*?\]\([^)]*\)?', ' ', text)
-    text = re.sub(r'(?<!\d)@\w+', ' ', text)
-    text = _WS_RE.sub(" ", text).strip()
-    return text
-
-def _fallback_rewrite(raw_text: str) -> str:
-    """AI hatası durumunda haberi kaybetmemek için zorunlu temizlik."""
-    clean = _clean_text(raw_text)
-    # Eğer metin hala çok kısaysa veya saçmaysa haber atlanmasın ama etiketlensin
-    return f"<b>MARKET ALERT:</b> {clean[:250]} (Translated to English automatically)"
-
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
@@ -126,6 +47,12 @@ SOURCE_CHANNELS: list[str] = [
     "@news_crypto",
     "@jrkripto",
 ]
+
+# Normalised set for fast O(1) membership check (lowercase, no @)
+# Used by the manual filter inside the event handler instead of relying on
+# Telethon's chats= resolution which silently drops unresolvable channels.
+_SOURCE_USERNAMES: set[str] = {ch.lstrip("@").lower() for ch in SOURCE_CHANNELS}
+
 DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG = (
     "\n\n"
@@ -139,7 +66,7 @@ TG_MAX_MEDIA      = 10               # Telegram sendMediaGroup hard limit
 DEDUP_CACHE_SIZE  = 60               # rolling window of recent summaries
 GROUP_COLLECT_S   = 1.2              # seconds to wait for all album frames to arrive
 MEDIA_DIR         = Path("/tmp/news_media")
-_WS_RE          = re.compile(r'\s+')
+_WS_RE            = re.compile(r'\s+')
 
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
@@ -273,24 +200,41 @@ def _cache_add(summary: str) -> None:
         _dedup_cache.append(summary[:500])
 
 
+# ── AI helpers (sync — always call via run_in_executor from async context) ────
+
 def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
+    """Synchronous — must be called via run_in_executor to avoid blocking the event loop."""
+    global _ai_client
     if _ai_client is None:
-        raise RuntimeError("AI client unavailable")
+        _ai_client = _make_ai_client()
+        if _ai_client is None:
+            raise RuntimeError("AI client unavailable")
 
     with _dedup_lock:
         cache_snapshot = list(_dedup_cache)
-        recent_stories = "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot)) if cache_snapshot else "No recent stories."
+        recent_stories = (
+            "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot))
+            if cache_snapshot else "No recent stories."
+        )
 
     formatted_prompt = AI_COMBINED_PROMPT.format(
         recent_stories=recent_stories,
-        incoming_news=raw_text
+        incoming_news=raw_text,
     )
 
     resp = _ai_client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a professional crypto news editor. YOUR ONLY OUTPUT LANGUAGE IS ENGLISH. If input is Turkish, translate to English. Never output in any other language."},
-            {"role": "user",   "content": formatted_prompt}, 
+            {
+                "role": "system",
+                "content": (
+                    "You are a professional crypto news editor. "
+                    "YOUR ONLY OUTPUT LANGUAGE IS ENGLISH. "
+                    "If input is Turkish, translate to English. "
+                    "Never output in any other language."
+                ),
+            },
+            {"role": "user", "content": formatted_prompt},
         ],
         temperature=0,
         max_tokens=300,
@@ -300,18 +244,125 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
     if not result:
         raise RuntimeError("AI returned empty string")
 
-    if result.upper() == "DUPLICATE":
+    # FIX: Use regex instead of exact equality so that trailing punctuation,
+    # mixed case, or extra whitespace variations ("DUPLICATE.", "Duplicate\n",
+    # "SKIP." etc.) are all caught correctly.  Previously "DUPLICATE." slipped
+    # through the == check and got posted verbatim as a caption on images.
+    _control_word = result.strip().rstrip('.,!? \n').upper()
+
+    if _control_word == "DUPLICATE":
         logger.info("news_aggregator: duplicate detected — skipped.")
-        return None          
+        return None
+
+    if _control_word == "SKIP":
+        logger.info("news_aggregator: AI marked as spam/skip — discarded.")
+        return None
+
+    # Safety guard: a legitimate rewrite always starts with one of the three
+    # HTML bold tags defined in the prompt ("<b>🚨", "<b>⚡", "<b>📊").
+    # If the result is suspiciously short AND doesn't start with "<b>", it is
+    # almost certainly a hallucinated control word variant or garbage output.
+    # In that case discard silently rather than posting junk to the channel.
+    if not result.startswith("<b>") and len(result) < 40:
+        logger.warning(
+            "news_aggregator: AI output looks invalid (no <b> tag, %d chars) — discarded: %r",
+            len(result), result[:60],
+        )
+        return None
 
     logger.info("news_aggregator: AI rewrite OK  %d → %d chars.", len(raw_text), len(result))
     return result
 
+
+def _sync_gpt_analysis(prompt: str) -> str:
+    """Synchronous GPT call — must be called via run_in_executor from async context."""
+    global _ai_client
+    if _ai_client is None:
+        _ai_client = _make_ai_client()
+        if _ai_client is None:
+            return "AI service unavailable."
+    resp = _ai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+async def _call_gpt_for_analysis(prompt: str) -> str:
+    """Async wrapper — offloads the blocking OpenAI HTTP call to a thread."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _sync_gpt_analysis, prompt)
+    except Exception as exc:
+        logger.warning("news_aggregator: GPT analysis error: %s", exc)
+        return "AI service unavailable."
+
+
+# ── Market analysis (periodic) ────────────────────────────────────────────────
+
+async def _get_trending_coins() -> list[str]:
+    def _fetch() -> list[str]:
+        resp = _requests.get("https://api.coingecko.com/api/v3/search/trending", timeout=10)
+        data = resp.json()
+        return [coin['item']['symbol'].upper() for coin in data['coins'][:3]]
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _fetch)
+    except Exception as e:
+        logger.warning(f"Trend fetch failed: {e}")
+        return ["BTC", "ETH", "SOL"]
+
+
+async def _get_market_data(coin: str) -> str:
+    def _fetch() -> str:
+        exchange = ccxt.binance()
+        ticker = exchange.fetch_ticker(f"{coin}/USDT")
+        ohlcv  = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
+        price  = ticker['last']
+        change = ticker['percentage']
+        volume = ticker['baseVolume']
+        return (
+            f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | "
+            f"24h Volume: {volume} | "
+            f"Recent Trend: Last 5 candles (4h) closing prices: {[c[4] for c in ohlcv]}"
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _fetch)
+    except Exception as e:
+        logger.warning(f"Market data fetch failed for {coin}: {e}")
+        return f"Market data for {coin} is currently unavailable due to API error."
+
+
+async def _periodic_market_analysis(tg_client: Any) -> None:
+    while True:
+        try:
+            await asyncio.sleep(14400)
+            trending_coins = await _get_trending_coins()
+            for coin in trending_coins:
+                market_data   = await _get_market_data(coin)
+                prompt        = MARKET_INSIGHT_PROMPT.format(data=market_data)
+                analysis_text = await _call_gpt_for_analysis(prompt)
+                await tg_client.send_message(
+                    '@Ledgexs',
+                    f"{analysis_text}{TELEGRAM_SIG}",
+                    parse_mode='html',
+                )
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.warning(f"Periodic analysis error: {e}")
+            await asyncio.sleep(60)
+
+
 # ── Text helpers ──────────────────────────────────────────────────────────────
 
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_HTML_TAG_RE     = re.compile(r"<[^>]+>")
 _MULTI_SPACES_RE = re.compile(r"[ \t]{2,}")
-_MULTI_NL_RE = re.compile(r"\n{3,}")
+_MULTI_NL_RE     = re.compile(r"\n{3,}")
+
 
 def _strip_html(text: str) -> str:
     clean = _HTML_TAG_RE.sub("", text)
@@ -319,14 +370,42 @@ def _strip_html(text: str) -> str:
     clean = _MULTI_NL_RE.sub("\n\n", clean)
     return clean.strip()
 
+
+def _remove_hashtags(text: str) -> str:
+    text = re.sub(r'#\w+', '', text)
+    return text.strip()
+
+
+def _clean_text(text: str) -> str:
+    text = re.sub(r'https?://\S+|www\.\S+', ' ', text)
+    text = re.sub(r'\[.*?\]\([^)]*\)?', ' ', text)
+    text = re.sub(r'(?<!\d)@\w+', ' ', text)
+    text = _WS_RE.sub(" ", text).strip()
+    return text
+
+
+def _fallback_rewrite(raw_text: str) -> str:
+    """AI hatası durumunda haberi kaybetmemek için zorunlu temizlik."""
+    clean = _clean_text(raw_text)
+    return f"<b>MARKET ALERT:</b> {clean[:250]} (Translated to English automatically)"
+
+
 # ── Fallback cleaning patterns ────────────────────────────────────────────────
 
-_URL_RE      = re.compile(r"https?://\S+|www\.\S+")
-_MENTION_RE  = re.compile(r"@\w+")
-_MD_LINK_RE  = re.compile(r"\[.*?\]\([^)]*\)?")
-_ASTERISK_RE = re.compile(r"\*{1,4}")
-_PAREN_RE    = re.compile(r"\(\s*(?:Twitter|X|Bloomberg|Reuters|WSJ|FT|CNBC|Forbes|BBC)\s*/?\w*\s*\)", re.IGNORECASE)
-_SOURCE_RE   = re.compile(r"\b(cointelegraph|coindesk|watcherguru|watcher\s*guru|ninjanews|ninja\s*news|unfolded|fin_?watch|bitcoinmagazine|bitcoin\s*magazine|decrypt|theblock|blockworks|cryptoslate|cryptopotato)\b", re.IGNORECASE)
+_URL_RE       = re.compile(r"https?://\S+|www\.\S+")
+_MENTION_RE   = re.compile(r"@\w+")
+_MD_LINK_RE   = re.compile(r"\[.*?\]\([^)]*\)?")
+_ASTERISK_RE  = re.compile(r"\*{1,4}")
+_PAREN_RE     = re.compile(
+    r"\(\s*(?:Twitter|X|Bloomberg|Reuters|WSJ|FT|CNBC|Forbes|BBC)\s*/?\w*\s*\)",
+    re.IGNORECASE,
+)
+_SOURCE_RE    = re.compile(
+    r"\b(cointelegraph|coindesk|watcherguru|watcher\s*guru|ninjanews|ninja\s*news|"
+    r"unfolded|fin_?watch|bitcoinmagazine|bitcoin\s*magazine|decrypt|theblock|"
+    r"blockworks|cryptoslate|cryptopotato)\b",
+    re.IGNORECASE,
+)
 _SENTENCE_SEP = re.compile(r"(?<=[.!?])\s+")
 
 # ── Media helpers ─────────────────────────────────────────────────────────────
@@ -343,13 +422,13 @@ def _cleanup_media_dir() -> None:
     except Exception as exc:
         logger.debug("news_aggregator: media cleanup error: %s", exc)
 
-# ── Telegram poster ───────────────────────────────────────────────────────────
+# ── Telegram poster (sync — call via run_in_executor) ─────────────────────────
 
 def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
     if not _BOT_TOKEN or not _REQUESTS_OK:
         return
 
-    base = f"https://api.telegram.org/bot{_BOT_TOKEN}"
+    base    = f"https://api.telegram.org/bot{_BOT_TOKEN}"
     caption = f"{tg_text}{TELEGRAM_SIG}"
 
     try:
@@ -368,25 +447,61 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
 
         elif len(media_paths) == 1:
             file_size = os.path.getsize(media_paths[0])
-            if file_size > 10485760: 
-                logger.warning("news_aggregator: Single photo too large (%d bytes), sending text only.", file_size)
-                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_notification": True, "disable_web_page_preview": True}, timeout=15)
+            if file_size > 10_485_760:
+                logger.warning(
+                    "news_aggregator: Single photo too large (%d bytes), sending text only.",
+                    file_size,
+                )
+                resp = _requests.post(
+                    f"{base}/sendMessage",
+                    json={
+                        "chat_id": DEST_CHANNEL,
+                        "text": caption,
+                        "parse_mode": "HTML",
+                        "disable_notification": True,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=15,
+                )
             else:
                 with open(media_paths[0], "rb") as fh:
-                    resp = _requests.post(f"{base}/sendPhoto", data={"chat_id": DEST_CHANNEL, "caption": caption, "disable_notification": True, "parse_mode": "HTML"}, files={"photo": fh}, timeout=30)
+                    resp = _requests.post(
+                        f"{base}/sendPhoto",
+                        data={
+                            "chat_id": DEST_CHANNEL,
+                            "caption": caption,
+                            "disable_notification": True,
+                            "parse_mode": "HTML",
+                        },
+                        files={"photo": fh},
+                        timeout=30,
+                    )
 
         else:
-            paths = media_paths[:TG_MAX_MEDIA]
+            paths      = media_paths[:TG_MAX_MEDIA]
             total_size = sum(os.path.getsize(p) for p in paths)
-            
-            if total_size > 50000000: 
-                logger.warning("news_aggregator: Album too large (%d bytes), sending text only.", total_size)
-                resp = _requests.post(f"{base}/sendMessage", json={"chat_id": DEST_CHANNEL, "text": caption, "parse_mode": "HTML", "disable_notification": True, "disable_web_page_preview": True}, timeout=15)
+
+            if total_size > 50_000_000:
+                logger.warning(
+                    "news_aggregator: Album too large (%d bytes), sending text only.",
+                    total_size,
+                )
+                resp = _requests.post(
+                    f"{base}/sendMessage",
+                    json={
+                        "chat_id": DEST_CHANNEL,
+                        "text": caption,
+                        "parse_mode": "HTML",
+                        "disable_notification": True,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=15,
+                )
             else:
                 media_json: list[dict] = []
-                files: dict[str, Any] = {}
+                files: dict[str, Any]  = {}
                 for i, p in enumerate(paths):
-                    key = f"photo{i}"
+                    key        = f"photo{i}"
                     files[key] = open(p, "rb")
                     item: dict[str, Any] = {"type": "photo", "media": f"attach://{key}"}
                     if i == 0:
@@ -394,13 +509,29 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
                         item["parse_mode"] = "HTML"
                     media_json.append(item)
 
-                resp = _requests.post(f"{base}/sendMediaGroup", data={"chat_id": DEST_CHANNEL, "media": json.dumps(media_json), "disable_notification": True}, files=files, timeout=45)
-                for fh in files.values(): fh.close()
+                resp = _requests.post(
+                    f"{base}/sendMediaGroup",
+                    data={
+                        "chat_id": DEST_CHANNEL,
+                        "media": json.dumps(media_json),
+                        "disable_notification": True,
+                    },
+                    files=files,
+                    timeout=45,
+                )
+                for fh in files.values():
+                    fh.close()
 
         if resp.ok:
-            logger.info("news_aggregator: Posted to %s (%d media).", DEST_CHANNEL, len(media_paths))
+            logger.info(
+                "news_aggregator: Posted to %s (%d media).", DEST_CHANNEL, len(media_paths)
+            )
         else:
-            logger.warning("news_aggregator: Telegram post failed %s: %s", resp.status_code, resp.text[:300])
+            logger.warning(
+                "news_aggregator: Telegram post failed %s: %s",
+                resp.status_code,
+                resp.text[:300],
+            )
             if media_paths:
                 _requests.post(
                     f"{base}/sendMessage",
@@ -416,7 +547,8 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
     except Exception as exc:
         logger.warning("news_aggregator: Telegram post error: %s", exc)
 
-# ── Twitter / X poster ────────────────────────────────────────────────────────
+
+# ── Twitter / X poster (sync — call via run_in_executor) ─────────────────────
 
 def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
     if _twitter_v2 is None:
@@ -437,115 +569,160 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 
     try:
         if media_ids:
-            _twitter_v2.create_tweet(text=tweet, media_ids=media_ids)
+            _twitter_v2.create_tweet(text=tweet, media_ids=media_ids, user_auth=True)
         else:
-            _twitter_v2.create_tweet(text=tweet)
-        logger.info("news_aggregator: Cross-posted to X (%d chars, %d media).", len(tweet), len(media_ids))
+            _twitter_v2.create_tweet(text=tweet, user_auth=True)
+        logger.info(
+            "news_aggregator: Cross-posted to X (%d chars, %d media).",
+            len(tweet),
+            len(media_ids),
+        )
     except Exception as exc:
         logger.warning("news_aggregator: X post failed: %s", exc)
 
-# ── Core news handler ─────────────────────────────────────────────────────────
 
-async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any, source_username: str) -> None:
-    # 0. Temel filtreleme
-    if len(raw_text) < 20:
-        logger.info(f"Ignored short/invalid news from {source_username}")
+# ── Twitter Auto Comment Helper ───────────────────────────────────────────────
+
+TWITTER_TARGET_MAPPING = {
+    "cointelegraph":        "2207129125",
+    "watcherguru":          "1387497871751196672",
+    "bitcoinmagazinetelegram": "361289499",
+    "coinbureau":           "906230721513181184",
+    "lookonchainchannel":   "1462727797135216641",
+    "bulltheory":           "815942827968495616",
+    "cryptoquant_official": "1136819035163619328",
+    "ninjanewstr":          "1218177800370360320",
+}
+
+
+def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: str) -> None:
+    """
+    Synchronous Twitter auto-comment — fetches latest tweet and replies.
+    Must be called via run_in_executor.
+
+    FIX — two bugs that caused 401:
+      1. max_results=1 is invalid (Twitter API requires 5–100). Fixed to 5.
+      2. user_auth=True must be passed so Tweepy uses OAuth 1.0a credentials
+         instead of attempting Bearer-Token (app-only) auth which fails when
+         no bearer_token is configured on the Client.
+    """
+    twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
+
+    tweets = _twitter_v2.get_users_tweets(
+        id=twitter_id,
+        max_results=5,       # FIX: was 1 (invalid; minimum is 5)
+        user_auth=True,      # FIX: required for OAuth 1.0a; omitting this caused 401
+    )
+    if not tweets.data:
+        logger.info("news_aggregator: no tweets found for %s — skipping auto-comment.", tg_username)
         return
 
-    # 1. AI Rewrite ve Duplicate Kontrolü
+    last_tweet = tweets.data[0]
+
+    _twitter_v2.create_tweet(
+        text=reply_text,
+        in_reply_to_tweet_id=str(last_tweet.id),
+        user_auth=True,      # FIX: required for write operations via OAuth 1.0a
+    )
+    logger.info("Auto-commented on %s's tweet (v2 API) — Success!", tg_username)
+
+
+async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
+    if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
+        return
+
     try:
-        rewritten = _ai_dedup_and_rewrite(raw_text)
-        if rewritten is None:  # Duplicate ise hiçbir şey yapmadan çık
+        prompt = (
+            f"News Content: {news_context[:300]}\n"
+            f"Latest Tweet from {tg_username}: (see context)\n"
+            "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
+            "DO NOT reply with specific details from the news. Instead, provide a generic "
+            "professional market insight relevant to the market current sentiment. "
+            "Tone: @Ledgexs brand voice. No hashtags, no emojis."
+        )
+        reply_text = await _call_gpt_for_analysis(prompt)
+
+        # Randomised delay to appear natural
+        await asyncio.sleep(random.randint(60, 180))
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            _sync_twitter_auto_comment,
+            tg_username,
+            news_context,
+            reply_text,
+        )
+    except Exception as e:
+        logger.warning(f"Twitter auto-comment failed: {e}")
+
+
+# ── Core news handler ─────────────────────────────────────────────────────────
+
+async def _handle_news(
+    raw_text: str,
+    messages: list[Any],
+    tg_client: Any,
+    source_username: str,
+) -> None:
+    # 0. Temel filtreleme
+    if len(raw_text) < 20:
+        logger.info("Ignored short/invalid news from %s", source_username)
+        return
+
+    loop = asyncio.get_running_loop()
+
+    # 1. AI Rewrite ve Duplicate Kontrolü (run_in_executor — blocks for 1-5s)
+    try:
+        rewritten = await loop.run_in_executor(None, _ai_dedup_and_rewrite, raw_text)
+        if rewritten is None:  # Duplicate
             return
     except Exception as exc:
         logger.warning("news_aggregator: AI failed (%s) — using fallback.", exc)
         rewritten = _fallback_rewrite(raw_text)
-        if not rewritten: return
+        if not rewritten:
+            return
 
-    # 2. SKIP Kontrolü (Düzeltildi: rewritten değişkenini kullanıyoruz)
-    if rewritten.strip().upper() == "SKIP":
-        logger.info(f"Skipping non-news content from {source_username}")
+    # 2. SKIP / stray control-word guard (second line of defence)
+    # _ai_dedup_and_rewrite already catches DUPLICATE and SKIP, but if the
+    # fallback path or any other edge case produces a control word, stop here.
+    _cw = rewritten.strip().rstrip('.,!? \n').upper()
+    if _cw in ("SKIP", "DUPLICATE"):
+        logger.info("Skipping control-word output from %s: %r", source_username, rewritten[:30])
         return
 
     # 3. Medyayı indir
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
-        if msg.media is None: continue
+        if msg.media is None:
+            continue
         try:
             path = await tg_client.download_media(msg, file=str(MEDIA_DIR) + "/")
-            if path: media_paths.append(path)
+            if path:
+                media_paths.append(path)
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
     # 4. Paylaşım ve Cache Güncelleme
     try:
         clean_tg_text = _remove_hashtags(rewritten)
-        _post_to_telegram(clean_tg_text, media_paths)
-        
+
+        # Blocking HTTP calls offloaded to thread pool so event loop stays free
+        await loop.run_in_executor(None, _post_to_telegram, clean_tg_text, media_paths)
+
         if media_paths:
-            _post_to_twitter(rewritten, media_paths)
+            await loop.run_in_executor(None, _post_to_twitter, rewritten, media_paths)
         else:
             logger.info("news_aggregator: Text-only news sent to Telegram.")
 
         await _twitter_auto_comment(source_username, rewritten)
-            
+
         _cache_add(_strip_html(rewritten))
-            
+
     finally:
         _cleanup_media_dir()
 
-# ── Twitter Auto Comment Helper ──────────────────────────────────────────────
-
-TWITTER_TARGET_MAPPING = {
-    "cointelegraph": "2207129125",
-    "watcherguru": "1387497871751196672",
-    "bitcoinmagazinetelegram": "361289499",
-    "coinbureau": "906230721513181184",
-    "lookonchainchannel": "1462727797135216641",
-    "bulltheory": "815942827968495616",
-    "cryptoquant_official": "1136819035163619328",
-    "ninjanewstr": "1218177800370360320"
-}
-
-async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
-    # Sadece _twitter_v2 kontrolü yapıyoruz
-    if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
-        return
-
-    twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
-
-    try:
-        # 1. En son tweeti al
-        tweets = _twitter_v2.get_users_tweets(id=twitter_id, max_results=1)
-        if not tweets.data:
-            return
-
-        last_tweet = tweets.data[0]
-
-        # 2. GPT'den cevabı al
-        prompt = (
-            f"News Content: {news_context[:300]}\n"
-            f"Latest Tweet from {tg_username}: '{last_tweet.text}'\n"
-            "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
-            "DO NOT reply with specific details from the news. Instead, provide a generic "
-            "professional market insight relevant to the market current sentiment. "
-            "Tone: @Ledgexs brand voice. No hashtags, no emojis."
-        )
-
-        reply_text = await _call_gpt_for_analysis(prompt)
-        await asyncio.sleep(random.randint(60, 180))
-
-        # 3. v2 API create_tweet
-        # in_reply_to_tweet_id parametresi string tipinde olmalıdır
-        response = _twitter_v2.create_tweet(
-            text=reply_text,
-            in_reply_to_tweet_id=str(last_tweet.id)
-        )
-        logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API) — Success!")
-
-    except Exception as e:
-        logger.warning(f"Twitter auto-comment failed: {e}")
 
 # ── Telethon async client ─────────────────────────────────────────────────────
 
@@ -553,42 +730,63 @@ async def _run_news_client() -> None:
     if not _TELETHON_OK or not all([_API_ID, _API_HASH, _SESSION_STR]):
         return
 
-    client = TelegramClient(StringSession(_SESSION_STR), int(_API_ID), _API_HASH, 
-                            connection_retries=None, retry_delay=5, auto_reconnect=True)
+    client = TelegramClient(
+        StringSession(_SESSION_STR),
+        int(_API_ID),
+        _API_HASH,
+        connection_retries=None,
+        retry_delay=5,
+        auto_reconnect=True,
+    )
 
-    pending_groups: dict[int, list[Any]] = {}
-    pending_tasks: dict[int, asyncio.Task] = {}
+    pending_groups: dict[int, list[Any]]     = {}
+    pending_tasks:  dict[int, asyncio.Task]  = {}
 
     async def _process_group(grouped_id: int, username: str) -> None:
         await asyncio.sleep(GROUP_COLLECT_S)
         msgs = pending_groups.pop(grouped_id, [])
         pending_tasks.pop(grouped_id, None)
-        if not msgs: return
+        if not msgs:
+            return
         raw = next((m.text for m in msgs if m.text), "").strip()
         try:
             await _handle_news(raw, msgs, client, username)
         except Exception as exc:
             logger.warning("news_aggregator: group handler error: %s", exc)
 
-    @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
+    # FIX: Do NOT pass chats=SOURCE_CHANNELS to the decorator.
+    # Telethon resolves those usernames at registration time. If any channel
+    # (e.g. @watcherguru, @coingraphnews) fails to resolve — because the
+    # session hasn't seen it before or a transient network error occurs —
+    # that channel is silently dropped and its events never fire.
+    # Instead we listen to ALL new messages and filter manually below.
+    @client.on(events.NewMessage())
     async def _on_new_message(event: events.NewMessage.Event) -> None:
         try:
-            chat = await event.get_chat()
-            # None kontrolünü garantiye al
-            username = getattr(chat, 'username', 'unknown') or 'unknown'
-            
-            msg = event.message
-            raw = (msg.text or "").strip()
+            chat     = await event.get_chat()
+            username = (getattr(chat, 'username', None) or "").lower()
+
+            # Manual filter: only process messages from our source channels
+            if username not in _SOURCE_USERNAMES:
+                return
+
+            msg        = event.message
+            raw        = (msg.text or "").strip()
             grouped_id = getattr(msg, "grouped_id", None)
-        
+
             if grouped_id is not None:
-                if grouped_id not in pending_groups: pending_groups[grouped_id] = []
+                if grouped_id not in pending_groups:
+                    pending_groups[grouped_id] = []
                 pending_groups[grouped_id].append(msg)
                 existing = pending_tasks.get(grouped_id)
-                if existing and not existing.done(): existing.cancel()
-                pending_tasks[grouped_id] = asyncio.create_task(_process_group(grouped_id, username))
+                if existing and not existing.done():
+                    existing.cancel()
+                pending_tasks[grouped_id] = asyncio.create_task(
+                    _process_group(grouped_id, username)
+                )
             else:
                 await _handle_news(raw, [msg], client, username)
+
         except Exception as exc:
             logger.warning("news_aggregator: event handler error: %s", exc)
 
@@ -598,24 +796,28 @@ async def _run_news_client() -> None:
         logger.info("news_aggregator: Telethon UserBot connected.")
         await client.run_until_disconnected()
     finally:
-        for task in pending_tasks.values(): task.cancel()
+        for task in pending_tasks.values():
+            task.cancel()
         await client.disconnect()
-        
+
+
 # ── Thread entry-point ────────────────────────────────────────────────────────
 
 def _news_thread_target() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    
+
     while True:
         try:
             loop.run_until_complete(_run_news_client())
         except Exception as exc:
-            logger.warning("news_aggregator: event loop crashed (%s) — restarting in 60 s.", exc)
+            logger.warning(
+                "news_aggregator: event loop crashed (%s) — restarting in 60 s.", exc
+            )
             time.sleep(60)
+
 
 def start_news_aggregator() -> threading.Thread:
     t = threading.Thread(target=_news_thread_target, daemon=True, name="NewsAggregator")
     t.start()
     logger.info("News aggregator thread started.")
-    return t

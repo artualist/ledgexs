@@ -583,48 +583,92 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 
 # ── Twitter Auto Comment Helper ───────────────────────────────────────────────
 
-TWITTER_TARGET_MAPPING = {
-    "cointelegraph":        "2207129125",
-    "watcherguru":          "1387497871751196672",
-    "bitcoinmagazinetelegram": "361289499",
-    "coinbureau":           "906230721513181184",
-    "lookonchainchannel":   "1462727797135216641",
-    "bulltheory":           "815942827968495616",
-    "cryptoquant_official": "1136819035163619328",
-    "ninjanewstr":          "1218177800370360320",
+# Telegram kanal username'i (key) → karşılık gelen Twitter/X @username (value).
+# Artık numeric ID saklamıyoruz; ID'ler runtime'da get_user() ile çekilir ve
+# tekrar kullanım için bellekte önbelleğe alınır.
+TWITTER_TARGET_MAPPING: dict[str, str] = {
+    "cointelegraph":           "Cointelegraph",
+    "watcherguru":             "WatcherGuru",
+    "bitcoinmagazinetelegram": "BitcoinMagazine",
+    "coinbureau":              "CoinBureau",
+    "lookonchainchannel":      "lookonchain",
+    "bulltheory":              "bulltheoryio",
+    "cryptoquant_official":    "cryptoquant_com",
+    "ninjanewstr":             "ninjanewsx",
 }
+
+# Runtime username → numeric ID cache (avoids a lookup API call on every news item)
+_twitter_id_cache: dict[str, str] = {}
 
 
 def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: str) -> None:
     """
-    Synchronous Twitter auto-comment — fetches latest tweet and replies.
-    Must be called via run_in_executor.
+    Synchronous Twitter auto-comment — resolves @username to numeric ID on
+    first use (cached in _twitter_id_cache), then replies to the most recent
+    standalone (root) tweet of that account.
 
-    FIX — two bugs that caused 401:
-      1. max_results=1 is invalid (Twitter API requires 5–100). Fixed to 5.
-      2. user_auth=True must be passed so Tweepy uses OAuth 1.0a credentials
-         instead of attempting Bearer-Token (app-only) auth which fails when
-         no bearer_token is configured on the Client.
+    Why username instead of hardcoded ID:
+      Numeric IDs never change but are error-prone to maintain manually.
+      Using get_user(username=...) lets us store readable names and have the
+      API always return the authoritative ID.
+
+    Why filter for root tweets only (in_reply_to_user_id is None):
+      get_users_tweets includes the account's own replies to other users.
+      Replying inside a foreign conversation triggers 403 even when the target
+      account has "Everyone can reply" — the restriction comes from the root
+      tweet's owner, not the target.
     """
-    twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
+    tw_username = TWITTER_TARGET_MAPPING[tg_username.lower()]
 
+    # ── Step 1: resolve username → numeric ID (use cache after first lookup) ──
+    if tw_username not in _twitter_id_cache:
+        user_resp = _twitter_v2.get_user(username=tw_username, user_auth=True)
+        if user_resp.data is None:
+            logger.warning(
+                "news_aggregator: Twitter user @%s not found — skipping auto-comment.",
+                tw_username,
+            )
+            return
+        _twitter_id_cache[tw_username] = str(user_resp.data.id)
+        logger.debug("news_aggregator: resolved @%s → %s", tw_username, _twitter_id_cache[tw_username])
+
+    twitter_id = _twitter_id_cache[tw_username]
+
+    # ── Step 2: fetch recent tweets and pick the latest root (standalone) one ──
     tweets = _twitter_v2.get_users_tweets(
         id=twitter_id,
-        max_results=5,       # FIX: was 1 (invalid; minimum is 5)
-        user_auth=True,      # FIX: required for OAuth 1.0a; omitting this caused 401
+        max_results=10,
+        tweet_fields=["conversation_id", "in_reply_to_user_id"],
+        user_auth=True,
     )
+
     if not tweets.data:
-        logger.info("news_aggregator: no tweets found for %s — skipping auto-comment.", tg_username)
+        logger.info("news_aggregator: no tweets found for @%s — skipping auto-comment.", tw_username)
         return
 
-    last_tweet = tweets.data[0]
+    target_tweet = None
+    for tweet in tweets.data:
+        if getattr(tweet, "in_reply_to_user_id", None) is None:
+            target_tweet = tweet
+            break
 
+    if target_tweet is None:
+        logger.info(
+            "news_aggregator: all recent tweets from @%s are replies — skipping auto-comment.",
+            tw_username,
+        )
+        return
+
+    # ── Step 3: post the reply ────────────────────────────────────────────────
     _twitter_v2.create_tweet(
         text=reply_text,
-        in_reply_to_tweet_id=str(last_tweet.id),
-        user_auth=True,      # FIX: required for write operations via OAuth 1.0a
+        in_reply_to_tweet_id=str(target_tweet.id),
+        user_auth=True,
     )
-    logger.info("Auto-commented on %s's tweet (v2 API) — Success!", tg_username)
+    logger.info(
+        "news_aggregator: Auto-commented on @%s tweet (id=%s) — Success!",
+        tw_username, target_tweet.id,
+    )
 
 
 async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:

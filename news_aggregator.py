@@ -448,13 +448,17 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
     if len(raw_text.strip()) < MIN_TEXT_LEN:
         return
 
-    rewritten: str | None
+    # 1. Önce AI'dan rewrite işlemini iste
     try:
         rewritten = _ai_dedup_and_rewrite(raw_text)
+        # Eğer AI 'DUPLICATE' dönerse (yani None), buraya girer ve fonksiyon biter.
+        # Cache'e eklenmez, dolayısıyla paylaşılmaz.
         if rewritten is None:
             return
+            
         if len(rewritten.strip()) < 5:
             raise RuntimeError(f"AI output too short: {rewritten!r}")
+            
     except Exception as exc:
         logger.warning("news_aggregator: AI call failed (%s) — using fallback.", exc)
         rewritten = _fallback_rewrite(raw_text)
@@ -462,35 +466,34 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
             logger.warning("news_aggregator: fallback also empty — dropping message.")
             return
 
-    _cache_add(_strip_html(rewritten))
-
+    # 2. Medyayı indir (Buraya kadar geldiyseniz, haber DUPLICATE değildir)
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
-        if msg.media is None:
-            continue
+        if msg.media is None: continue
         try:
             path = await tg_client.download_media(msg, file=str(MEDIA_DIR) + "/")
-            if path:
-                media_paths.append(path)
+            if path: media_paths.append(path)
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
-    # ── KRİTİK DEĞİŞİKLİK BURADA ──────────────────────────────────────────────
+    # 3. Paylaşımı yap
     try:
         clean_tg_text = _remove_hashtags(rewritten)
-        # Telegram'a her halükarda (medyalı veya medyasız) gönderiyoruz
         _post_to_telegram(clean_tg_text, media_paths)
         
-        # Twitter'a YALNIZCA listede indirilen bir medya varsa gönderiyoruz
         if media_paths:
             _post_to_twitter(rewritten, media_paths)
         else:
-            logger.info("news_aggregator: Text-only news detected. Sent to Telegram, skipped for X.")
+            logger.info("news_aggregator: Text-only news sent to Telegram.")
+            
+        # 4. KRİTİK NOKTA: Haber başarıyla paylaşıldıktan SONRA cache'e ekle.
+        # Böylece sadece senin yayınladığın içerik 'geçmiş' olarak işaretlenir.
+        _cache_add(_strip_html(rewritten))
             
     finally:
         _cleanup_media_dir()
-
+        
 # ── Telethon async client ─────────────────────────────────────────────────────
 
 async def _run_news_client() -> None:

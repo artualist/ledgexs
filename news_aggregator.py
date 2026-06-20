@@ -538,6 +538,9 @@ async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
             _twitter_v2.create_tweet(text=reply_text, in_reply_to_tweet_id=str(last_tweet.id))
             logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API).")
 
+    except Exception as e:
+        logger.warning(f"Twitter auto-comment failed: {e}")
+
 # ── Telethon async client ─────────────────────────────────────────────────────
 
 async def _run_news_client() -> None:

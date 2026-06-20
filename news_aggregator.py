@@ -509,42 +509,95 @@ TWITTER_TARGET_MAPPING = {
 }
 
 async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
-    # Sadece _twitter_v2 kontrolü yeterli
-    if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
+if _twitter_v2 is None:
+logger.warning("Twitter auto-comment skipped: client is None")
+return
+
+if tg_username.lower() not in TWITTER_TARGET_MAPPING:
+    logger.info(f"No Twitter mapping for {tg_username}")
+    return
+
+twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
+
+try:
+    logger.info(f"[AUTO_REPLY] Starting for {tg_username} ({twitter_id})")
+
+    # Auth testi
+    try:
+        me = _twitter_v2.get_me(user_auth=True)
+        logger.info(
+            f"[AUTO_REPLY] Auth OK as @{me.data.username}"
+        )
+    except Exception:
+        logger.exception(
+            "[AUTO_REPLY] get_me() failed"
+        )
         return
 
-    twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
-    
+    # Son tweeti çek
     try:
-        # 1. En son tweeti al
-        tweets = _twitter_v2.get_users_tweets(id=twitter_id, max_results=1)
-        if not tweets.data: return
-        
-        last_tweet = tweets.data[0]
-        
-        # 2. GPT'den cevabı al
-        prompt = (
-            f"News Content: {news_context[:300]}\n"
-            f"Latest Tweet from {tg_username}: '{last_tweet.text}'\n"
-            "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
-            "DO NOT reply with specific details from the news. Instead, provide a generic "
-            "professional market insight relevant to the market current sentiment. "
-            "Tone: @Ledgexs brand voice. No hashtags, no emojis."
+        tweets = _twitter_v2.get_users_tweets(
+            id=twitter_id,
+            max_results=1,
+            user_auth=True
         )
-        
-        reply_text = await _call_gpt_for_analysis(prompt)
-        await asyncio.sleep(random.randint(60, 180)) 
-        
-        # 3. TEK YOL: v2 API create_tweet
-        # in_reply_to_tweet_id parametresi ile direkt cevap atıyoruz.
-        response = _twitter_v2.create_tweet(
-            text=reply_text, 
-            in_reply_to_tweet_id=last_tweet.id
+    except Exception:
+        logger.exception(
+            f"[AUTO_REPLY] get_users_tweets failed for {tg_username}"
         )
-        logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API) — Success!")
+        return
 
-    except Exception as e:
-        logger.warning(f"Twitter auto-comment failed: {e}")
+    if not tweets or not tweets.data:
+        logger.warning(
+            f"[AUTO_REPLY] No tweets found for {tg_username}"
+        )
+        return
+
+    last_tweet = tweets.data[0]
+
+    logger.info(
+        f"[AUTO_REPLY] Latest tweet id={last_tweet.id}"
+    )
+
+    prompt = (
+        f"News Content: {news_context[:300]}\n"
+        f"Latest Tweet from {tg_username}: '{last_tweet.text}'\n"
+        "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
+        "DO NOT reply with specific details from the news. Instead, provide a generic "
+        "professional market insight relevant to the current market sentiment. "
+        "Tone: @Ledgexs brand voice. No hashtags. No emojis."
+    )
+
+    reply_text = await _call_gpt_for_analysis(prompt)
+
+    if not reply_text:
+        logger.warning("[AUTO_REPLY] GPT returned empty reply")
+        return
+
+    reply_text = reply_text[:280]
+
+    await asyncio.sleep(random.randint(60, 180))
+
+    try:
+        response = _twitter_v2.create_tweet(
+            text=reply_text,
+            in_reply_to_tweet_id=str(last_tweet.id),
+            user_auth=True
+        )
+
+        logger.info(
+            f"[AUTO_REPLY] Reply sent successfully: {response}"
+        )
+
+    except Exception:
+        logger.exception(
+            "[AUTO_REPLY] create_tweet failed"
+        )
+
+except Exception:
+    logger.exception(
+        f"[AUTO_REPLY] Unexpected error for {tg_username}"
+    )
 
 # ── Telethon async client ─────────────────────────────────────────────────────
 

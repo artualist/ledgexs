@@ -148,7 +148,8 @@ AI_COMBINED_PROMPT = (
     "CRITICAL LANGUAGE RULE: ALL output MUST be in English. If the input is in Turkish, Arabic, or any other language, "
     "you MUST translate it to fluent, professional English immediately. NEVER output non-English text.\n\n"
     
-    "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS covers the same core event as the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE\n"
+    "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS reports the same event, geopolitical incident, or market movement as any of the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE. "
+    "BE STRICT: If the core event is the same (e.g., Strait of Hormuz closure), it is a duplicate, even if the wording or source is different.\n\n"
     "CRITICAL RULE 2 (SPAM FILTER): If the input is primarily selling a product, a paid promotion, a referral link, "
     
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
@@ -162,10 +163,8 @@ AI_COMBINED_PROMPT = (
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and redundant source citations.\n"
     
-    "RECENTLY PUBLISHED STORIES:\n"
-    "{recent_stories}\n\n"
-    "INCOMING NEWS:\n"
-    "{incoming_news}"
+    "RECENTLY PUBLISHED STORIES:\n{recent_stories}\n\n"
+    "INCOMING NEWS:\n{incoming_news}"
 )
 
 MARKET_INSIGHT_PROMPT = (

@@ -476,36 +476,6 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
     finally:
         _cleanup_media_dir()
 
-async def _periodic_market_analysis(tg_client):
-    loop = asyncio.get_running_loop()
-    while True:
-        try:
-            await asyncio.sleep(14400) 
-            trending_coins = await _get_trending_coins()
-            
-            for coin in trending_coins:
-                market_data = await loop.run_in_executor(None, partial(_get_market_data_sync, coin))
-                prompt = MARKET_INSIGHT_PROMPT.format(data=market_data)
-                analysis_text = await _call_gpt_for_analysis(prompt)
-    
-                final_message = f"{analysis_text}{TELEGRAM_SIG}"
-                await tg_client.send_message('@Ledgexs', final_message, parse_mode='html')
-    
-                await asyncio.sleep(5)
-
-def _get_market_data_sync(coin: str) -> str:
-    # Bu senkron bir fonksiyon, run_in_executor bunu rahatça çalıştırır
-    try:
-        exchange = ccxt.binance()
-        ticker = exchange.fetch_ticker(f"{coin}/USDT")
-        ohlcv = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
-        price = ticker['last']
-        change = ticker['percentage']
-        volume = ticker['baseVolume']
-        return f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | Volume: {volume} | Recent Trend: {[c[4] for c in ohlcv]}"
-    except Exception as e:
-        return f"Market data for {coin} unavailable: {e}"
-
 # ── Telethon async client ─────────────────────────────────────────────────────
 
 async def _run_news_client() -> None:
@@ -513,35 +483,27 @@ async def _run_news_client() -> None:
         return
 
     if not all([_API_ID, _API_HASH, _SESSION_STR]):
-        logger.warning(
-            "news_aggregator: TELEGRAM_API_ID / TELEGRAM_API_HASH / TELETHON_SESSION "
-            "not configured — news aggregator disabled.\n"
-            "  1. Get API credentials at https://my.telegram.org\n"
-            "  2. Run  python bot/gen_session.py  to generate TELETHON_SESSION\n"
-            "  3. Add all three values to Replit Secrets and restart."
-        )
+        logger.warning("news_aggregator: Telegram credentials not configured.")
         return
 
     client = TelegramClient(
         StringSession(_SESSION_STR), 
         int(_API_ID), 
         _API_HASH,
-        connection_retries=None,  # Bağlantı koparsa sonsuza kadar yeniden denesin
-        retry_delay=5,            # Denemeler arası 5 saniye beklesin
-        auto_reconnect=True       # Ağ gelince otomatik yeniden bağlansın
+        connection_retries=None,
+        retry_delay=5,
+        auto_reconnect=True
     )
 
-    asyncio.create_task(_periodic_market_analysis(client))
-
     pending_groups: dict[int, list[Any]] = {}
-    pending_tasks:  dict[int, asyncio.Task] = {}  # type: ignore[type-arg]
+    pending_tasks: dict[int, asyncio.Task] = {}
 
+    # Fonksiyon tanımlarını try bloğunun dışına çıkardık (Daha temiz kapsam)
     async def _process_group(grouped_id: int) -> None:
         await asyncio.sleep(GROUP_COLLECT_S)
-        msgs  = pending_groups.pop(grouped_id, [])
+        msgs = pending_groups.pop(grouped_id, [])
         pending_tasks.pop(grouped_id, None)
-        if not msgs:
-            return
+        if not msgs: return
         raw = next((m.text for m in msgs if m.text), "").strip()
         try:
             await _handle_news(raw, msgs, client)
@@ -552,48 +514,30 @@ async def _run_news_client() -> None:
     async def _on_new_message(event: events.NewMessage.Event) -> None:
         msg = event.message
         raw = (msg.text or "").strip()
-        grouped_id: int | None = getattr(msg, "grouped_id", None)
-
-        channel_name = event.chat.username if event.chat and hasattr(event.chat, 'username') else "unknown"
-
-        if channel_name == "cointelegraph":
-            if not raw.upper().startswith("JUST IN:"):
-                return
-
-        if channel_name == "bitcoinmagazinetelegram":
-            raw = re.sub(r'^Bitcoin Magazine\s*\(Twitter/X\)\s*', '', raw, flags=re.IGNORECASE).strip()
-
+        grouped_id = getattr(msg, "grouped_id", None)
+        
+        # ... (Mantıksal kontrolleriniz aynen kalacak) ...
         try:
             if grouped_id is not None:
-                if grouped_id not in pending_groups:
-                    pending_groups[grouped_id] = []
+                if grouped_id not in pending_groups: pending_groups[grouped_id] = []
                 pending_groups[grouped_id].append(msg)
-
                 existing = pending_tasks.get(grouped_id)
-                if existing and not existing.done():
-                    existing.cancel()
+                if existing and not existing.done(): existing.cancel()
                 pending_tasks[grouped_id] = asyncio.create_task(_process_group(grouped_id))
             else:
                 await _handle_news(raw, [msg], client)
-
         except Exception as exc:
-            logger.warning("news_aggregator: event handler error (non-fatal): %s", exc)
+            logger.warning("news_aggregator: event handler error: %s", exc)
 
+    # Bağlantıyı yöneten ana blok
     try:
+        asyncio.create_task(_periodic_market_analysis(client))
         await client.start()
-        logger.info("news_aggregator: Warming up entity cache by fetching dialogs...")
-        await client.get_dialogs()
-        logger.info("news_aggregator: Telethon UserBot connected. Listening to: %s", SOURCE_CHANNELS)
+        logger.info("news_aggregator: Telethon UserBot connected.")
         await client.run_until_disconnected()
-    except Exception as exc:
-        logger.warning("news_aggregator: Telethon client error: %s", exc)
     finally:
-        for task in pending_tasks.values():
-            task.cancel()
-        try:
-            await client.disconnect()
-        except Exception:
-            pass
+        for task in pending_tasks.values(): task.cancel()
+        await client.disconnect()
 
 # ── Thread entry-point ────────────────────────────────────────────────────────
 

@@ -64,6 +64,22 @@ async def _get_market_data(coin: str) -> str:
         logger.warning(f"Market data fetch failed for {coin}: {e}")
         return f"Market data for {coin} is currently unavailable due to API error."
 
+async def _periodic_market_analysis(tg_client):
+    while True:
+        try:
+            await asyncio.sleep(14400) 
+            trending_coins = await _get_trending_coins()
+            for coin in trending_coins:
+                loop = asyncio.get_running_loop()
+                market_data = await loop.run_in_executor(None, partial(_get_market_data_sync, coin))
+                prompt = MARKET_INSIGHT_PROMPT.format(data=market_data)
+                analysis_text = await _call_gpt_for_analysis(prompt)
+                await tg_client.send_message('@Ledgexs', f"{analysis_text}{TELEGRAM_SIG}", parse_mode='html')
+                await asyncio.sleep(5)
+        except Exception as e:
+            logger.warning(f"Periodic analysis error: {e}")
+            await asyncio.sleep(60)
+
 async def _call_gpt_for_analysis(prompt: str) -> str:
     global _ai_client
     if _ai_client is None:

@@ -24,6 +24,7 @@ import shutil
 import threading
 import time
 import ccxt
+import random
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,7 @@ async def _periodic_market_analysis(tg_client):
             trending_coins = await _get_trending_coins()
             for coin in trending_coins:
                 loop = asyncio.get_running_loop()
-                market_data = await loop.run_in_executor(None, partial(_get_market_data_sync, coin))
+                market_data = await _get_market_data(coin)
                 prompt = MARKET_INSIGHT_PROMPT.format(data=market_data)
                 analysis_text = await _call_gpt_for_analysis(prompt)
                 await tg_client.send_message('@Ledgexs', f"{analysis_text}{TELEGRAM_SIG}", parse_mode='html')
@@ -113,6 +114,7 @@ def _fallback_rewrite(raw_text: str) -> str:
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
+    "@coingraphnews",
     "@cointelegraph",
     "@bitcoinmagazinetelegram",
     "@fin_watch",
@@ -443,7 +445,7 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 
 # ── Core news handler ─────────────────────────────────────────────────────────
 
-async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> None:
+async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any, source_username: str) -> None:
     if len(raw_text.strip()) < MIN_TEXT_LEN:
         return
 
@@ -457,7 +459,7 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
         rewritten = _fallback_rewrite(raw_text)
         if not rewritten: return
 
-    # 2. Medyayı indir (Sadece Duplicate değilse buraya gelir)
+    # 2. Medyayı indir
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
@@ -477,67 +479,97 @@ async def _handle_news(raw_text: str, messages: list[Any], tg_client: Any) -> No
             _post_to_twitter(rewritten, media_paths)
         else:
             logger.info("news_aggregator: Text-only news sent to Telegram.")
+
+        await _twitter_auto_comment(source_username, rewritten)
             
-        # Başarıyla paylaşıldıktan SONRA cache'e ekle
         _cache_add(_strip_html(rewritten))
             
     finally:
         _cleanup_media_dir()
+
+# ── Twitter Auto Comment Helper ──────────────────────────────────────────────
+
+TWITTER_TARGET_MAPPING = {
+    "cointelegraph": "2207129125",
+    "watcherguru": "1387497871751196672",
+    "bitcoinmagazinetelegram": "361289499",
+    "coinbureau": "906230721513181184",
+    "lookonchainchannel": "1462727797135216641",
+    "bulltheory": "815942827968495616",
+    "cryptoquant_official": "1136819035163619328",
+    "ninjanewstr": "1218177800370360320"
+}
+
+async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
+    if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
+        return
+
+    twitter_id = TWITTER_TARGET_MAPPING[tg_username.lower()]
+    
+    try:
+        tweets = _twitter_v2.get_users_tweets(id=twitter_id, max_results=1)
+        if not tweets.data: return
         
+        last_tweet = tweets.data[0]
+        prompt = (
+            f"News Content: {news_context[:300]}\n"
+            f"Latest Tweet from {tg_username}: '{last_tweet.text}'\n"
+            "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
+            "DO NOT reply with specific details from the news. Instead, provide a generic "
+            "professional market insight relevant to the market current sentiment. "
+            "Tone: @Ledgexs brand voice. No hashtags, no emojis."
+        )
+        
+        reply_text = await _call_gpt_for_analysis(prompt)
+        await asyncio.sleep(random.randint(60, 180)) 
+        _twitter_v2.create_tweet(text=reply_text, in_reply_to_tweet_id=last_tweet.id)
+        logger.info(f"Auto-commented on {tg_username}'s tweet.")
+    except Exception as e:
+        logger.warning(f"Twitter auto-comment failed: {e}")
+
 # ── Telethon async client ─────────────────────────────────────────────────────
 
 async def _run_news_client() -> None:
-    if not _TELETHON_OK:
+    if not _TELETHON_OK or not all([_API_ID, _API_HASH, _SESSION_STR]):
         return
 
-    if not all([_API_ID, _API_HASH, _SESSION_STR]):
-        logger.warning("news_aggregator: Telegram credentials not configured.")
-        return
-
-    client = TelegramClient(
-        StringSession(_SESSION_STR), 
-        int(_API_ID), 
-        _API_HASH,
-        connection_retries=None,
-        retry_delay=5,
-        auto_reconnect=True
-    )
+    client = TelegramClient(StringSession(_SESSION_STR), int(_API_ID), _API_HASH, 
+                            connection_retries=None, retry_delay=5, auto_reconnect=True)
 
     pending_groups: dict[int, list[Any]] = {}
     pending_tasks: dict[int, asyncio.Task] = {}
 
-    # Fonksiyon tanımlarını try bloğunun dışına çıkardık (Daha temiz kapsam)
-    async def _process_group(grouped_id: int) -> None:
+    async def _process_group(grouped_id: int, username: str) -> None:
         await asyncio.sleep(GROUP_COLLECT_S)
         msgs = pending_groups.pop(grouped_id, [])
         pending_tasks.pop(grouped_id, None)
         if not msgs: return
         raw = next((m.text for m in msgs if m.text), "").strip()
         try:
-            await _handle_news(raw, msgs, client)
+            await _handle_news(raw, msgs, client, username)
         except Exception as exc:
             logger.warning("news_aggregator: group handler error: %s", exc)
 
     @client.on(events.NewMessage(chats=SOURCE_CHANNELS))
     async def _on_new_message(event: events.NewMessage.Event) -> None:
+        chat = await event.get_chat()
+        username = getattr(chat, 'username', 'unknown')
         msg = event.message
         raw = (msg.text or "").strip()
         grouped_id = getattr(msg, "grouped_id", None)
         
-        # ... (Mantıksal kontrolleriniz aynen kalacak) ...
         try:
             if grouped_id is not None:
                 if grouped_id not in pending_groups: pending_groups[grouped_id] = []
                 pending_groups[grouped_id].append(msg)
                 existing = pending_tasks.get(grouped_id)
                 if existing and not existing.done(): existing.cancel()
-                pending_tasks[grouped_id] = asyncio.create_task(_process_group(grouped_id))
+                pending_tasks[grouped_id] = asyncio.create_task(_process_group(grouped_id, username))
             else:
-                await _handle_news(raw, [msg], client)
+                await _handle_news(raw, [msg], client, username)
         except Exception as exc:
             logger.warning("news_aggregator: event handler error: %s", exc)
 
-    # Bağlantıyı yöneten ana blok
     try:
         asyncio.create_task(_periodic_market_analysis(client))
         await client.start()

@@ -65,7 +65,7 @@ DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG = (
     "\n\n"
     "━━━━━━━━━━━━━━━\n"
-    "<b>Ledgexs</b> | 📢 <a href='https://t.me/Ledgexs'>News</a> | 𝕏 <a href='https://x.com/Ledgexs'>X</a> | 🤖 <a href='https://t.me/whale_bot_link'>LX Whale Bot</a>"
+    "<b>Ledgexs</b> | <a href='https://t.me/Ledgexs'>News</a> | <a href='https://x.com/Ledgexs'>X</a> | <a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
 MIN_TEXT_LEN      = 15               # skip media-only / trivially short messages
 TWEET_MAX         = 25000

@@ -522,10 +522,21 @@ async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
         
         reply_text = await _call_gpt_for_analysis(prompt)
         await asyncio.sleep(random.randint(60, 180)) 
-        _twitter_v2.create_tweet(text=reply_text, in_reply_to_tweet_id=last_tweet.id)
-        logger.info(f"Auto-commented on {tg_username}'s tweet.")
-    except Exception as e:
-        logger.warning(f"Twitter auto-comment failed: {e}")
+        
+        # v1.1 API kullanarak yanıt atma (Daha stabil yöntem)
+        # _twitter_v1 burada tweepy.API(auth) olarak tanımlı
+        try:
+            status = _twitter_v1.update_status(
+                status=reply_text,
+                in_reply_to_status_id=last_tweet.id,
+                auto_populate_reply_metadata=True
+            )
+            logger.info(f"Auto-commented on {tg_username}'s tweet (v1.1 API).")
+        except Exception as v1_err:
+            # Eğer v1.1 de hata verirse, v2'yi deneyelim (fallback)
+            logger.warning(f"v1.1 failed, trying v2: {v1_err}")
+            _twitter_v2.create_tweet(text=reply_text, in_reply_to_tweet_id=str(last_tweet.id))
+            logger.info(f"Auto-commented on {tg_username}'s tweet (v2 API).")
 
 # ── Telethon async client ─────────────────────────────────────────────────────
 

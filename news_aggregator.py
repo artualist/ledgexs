@@ -597,15 +597,19 @@ async def _run_news_client() -> None:
 
 # ── Thread entry-point ────────────────────────────────────────────────────────
 
+# ── Thread entry-point ────────────────────────────────────────────────────────
+
 def _news_thread_target() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
     while True:
         try:
             loop.run_until_complete(_run_news_client())
         except Exception as exc:
             logger.warning("news_aggregator: event loop crashed (%s) — restarting in 60 s.", exc)
-        time.sleep(60)
+            time.sleep(60)
+        # Buradaki girinti, except bloğunun loop içinde olduğunu garanti eder.
 
 def start_news_aggregator() -> threading.Thread:
     t = threading.Thread(target=_news_thread_target, daemon=True, name="NewsAggregator")

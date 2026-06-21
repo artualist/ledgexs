@@ -23,7 +23,6 @@ import re
 import shutil
 import threading
 import time
-import ccxt
 import random
 from collections import deque
 from pathlib import Path
@@ -57,7 +56,7 @@ DEST_CHANNEL      = "@Ledgexs"
 TELEGRAM_SIG = (
     "\n\n"
     "━━━━━━━━━━━━━━━\n"
-    "<b>Ledgexs</b> | <a href='https://t.me/LedgexsWhale'>Whale Alert</a> | <a href='https://x.com/Ledgexs'>X</a> | <a href='https://t.me/LedgexsBot'>Ledgexs Bot</a>"
+    "<b>Ledgexs</b> | <a href='https://t.me/Ledgexs'>News</a> | <a href='https://x.com/Ledgexs'>X</a> | <a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
 MIN_TEXT_LEN      = 15               # skip media-only / trivially short messages
 TWEET_MAX         = 25000
@@ -104,12 +103,12 @@ AI_COMBINED_PROMPT = (
 )
 
 MARKET_INSIGHT_PROMPT = (
-    "You are a professional crypto analyst for @Ledgexs. Create a market insight post for a trending token.\n\n"
-    "FORMAT RULES:\n"
-    "1. TITLE: Start with a catchy, bold headline in ALL CAPS (e.g., 🚀 $MYX EXPLOSIVE ON-CHAIN ACTIVITY!)\n"
-    "2. THE EVENT (Max 3 sentences): Explain the specific trigger (huge wallet move, price pump/dump, or protocol update).\n"
-    "3. ANALYSIS (Max 3 sentences): Provide a sharp, professional insight on potential next moves.\n"
-    "4. LANGUAGE: Professional English.\n\n"
+    "You are a professional crypto analyst for @Ledgexs. Write an ultra-short market insight post.\n\n"
+    "STRICT FORMAT RULES:\n"
+    "1. HEADLINE: One punchy line using <b>🚀 $SYMBOL SHORT_ACTION!</b> — use HTML <b> tags, NEVER ** asterisks.\n"
+    "2. BODY: EXACTLY 2 SHORT sentences max. One explains what is happening; one explains why it matters.\n"
+    "3. FORMATTING: HTML only (<b>, <i>). ZERO markdown (no **, no __, no #). No bullet points, no headers.\n"
+    "4. LANGUAGE: Professional English. Be concise — readers skim on mobile.\n\n"
     "DATA PROVIDED:\n{data}"
 )
 
@@ -307,11 +306,31 @@ async def _call_gpt_for_analysis(prompt: str) -> str:
 
 # ── Market analysis (periodic) ────────────────────────────────────────────────
 
+# CoinGecko slug map — used by _get_market_data to resolve symbol → API ID
+_CG_IDS: dict[str, str] = {
+    "BTC": "bitcoin",        "ETH": "ethereum",       "SOL": "solana",
+    "BNB": "binancecoin",    "XRP": "ripple",          "ADA": "cardano",
+    "DOGE": "dogecoin",      "AVAX": "avalanche-2",    "LINK": "chainlink",
+    "DOT": "polkadot",       "MATIC": "matic-network", "UNI": "uniswap",
+    "ATOM": "cosmos",        "LTC": "litecoin",        "TRX": "tron",
+    "NEAR": "near",          "FTM": "fantom",           "ALGO": "algorand",
+    "SUI": "sui",            "APT": "aptos",            "OP": "optimism",
+    "ARB": "arbitrum",       "INJ": "injective-protocol", "TIA": "celestia",
+    "SEI": "sei-network",    "PENGU": "pudgy-penguins", "HYPE": "hyperliquid",
+    "WIF": "dogwifcoin",     "BONK": "bonk",            "PEPE": "pepe",
+    "TON": "the-open-network", "NOT": "notcoin",        "FLOKI": "floki",
+}
+
+
 async def _get_trending_coins() -> list[str]:
+    """Fetch top trending coins from CoinGecko (no API key required)."""
     def _fetch() -> list[str]:
-        resp = _requests.get("https://api.coingecko.com/api/v3/search/trending", timeout=10)
+        resp = _requests.get(
+            "https://api.coingecko.com/api/v3/search/trending", timeout=12
+        )
+        resp.raise_for_status()
         data = resp.json()
-        return [coin['item']['symbol'].upper() for coin in data['coins'][:3]]
+        return [coin["item"]["symbol"].upper() for coin in data["coins"][:3]]
 
     try:
         loop = asyncio.get_running_loop()
@@ -322,17 +341,30 @@ async def _get_trending_coins() -> list[str]:
 
 
 async def _get_market_data(coin: str) -> str:
+    """Fetch price/volume/change for a coin via CoinGecko (replaces geo-blocked Binance API)."""
     def _fetch() -> str:
-        exchange = ccxt.binance()
-        ticker = exchange.fetch_ticker(f"{coin}/USDT")
-        ohlcv  = exchange.fetch_ohlcv(f"{coin}/USDT", timeframe='4h', limit=5)
-        price  = ticker['last']
-        change = ticker['percentage']
-        volume = ticker['baseVolume']
+        cg_id = _CG_IDS.get(coin.upper(), coin.lower())
+        resp  = _requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{cg_id}",
+            params={
+                "localization": "false", "tickers": "false",
+                "community_data": "false", "developer_data": "false",
+            },
+            timeout=12,
+        )
+        resp.raise_for_status()
+        data   = resp.json()
+        market = data.get("market_data", {})
+        price  = market.get("current_price",             {}).get("usd", 0) or 0
+        change = market.get("price_change_percentage_24h", 0) or 0
+        vol    = market.get("total_volume",              {}).get("usd", 0) or 0
+        cap    = market.get("market_cap",                {}).get("usd", 0) or 0
+        high   = market.get("high_24h",                  {}).get("usd", 0) or 0
+        low    = market.get("low_24h",                   {}).get("usd", 0) or 0
         return (
-            f"Asset: {coin}/USDT | Price: {price} | 24h Change: {change}% | "
-            f"24h Volume: {volume} | "
-            f"Recent Trend: Last 5 candles (4h) closing prices: {[c[4] for c in ohlcv]}"
+            f"Asset: ${coin} | Price: ${price:,.4f} | 24h Change: {change:+.2f}% | "
+            f"24h Volume: ${vol:,.0f} | Market Cap: ${cap:,.0f} | "
+            f"24h High: ${high:,.4f} | 24h Low: ${low:,.4f}"
         )
 
     try:
@@ -340,24 +372,40 @@ async def _get_market_data(coin: str) -> str:
         return await loop.run_in_executor(None, _fetch)
     except Exception as e:
         logger.warning(f"Market data fetch failed for {coin}: {e}")
-        return f"Market data for {coin} is currently unavailable due to API error."
+        return f"${coin}: current price data temporarily unavailable."
 
 
 async def _periodic_market_analysis(tg_client: Any) -> None:
+    """
+    Every 4 hours:
+      1. Fetch the top-3 trending coins from CoinGecko.
+      2. Pick only the #1 trending coin (not all three — avoids flooding).
+      3. Generate a short AI market insight (HTML, max 2 sentences).
+      4. Post to Telegram (@Ledgexs) AND X/Twitter.
+    """
     while True:
         try:
-            await asyncio.sleep(14400)
+            await asyncio.sleep(14400)   # 4-hour cadence
             trending_coins = await _get_trending_coins()
-            for coin in trending_coins:
-                market_data   = await _get_market_data(coin)
-                prompt        = MARKET_INSIGHT_PROMPT.format(data=market_data)
-                analysis_text = await _call_gpt_for_analysis(prompt)
-                await tg_client.send_message(
-                    '@Ledgexs',
-                    f"{analysis_text}{TELEGRAM_SIG}",
-                    parse_mode='html',
-                )
-                await asyncio.sleep(5)
+            if not trending_coins:
+                continue
+
+            coin        = trending_coins[0]    # top-1 trending coin only
+            market_data = await _get_market_data(coin)
+            prompt      = MARKET_INSIGHT_PROMPT.format(data=market_data)
+            raw_text    = await _call_gpt_for_analysis(prompt)
+
+            # Strip any stray ** markdown the AI may have produced
+            analysis_text = _ASTERISK_RE.sub("", raw_text).strip()
+
+            loop = asyncio.get_running_loop()
+
+            # ── Telegram ─────────────────────────────────────────────────────
+            await loop.run_in_executor(None, _post_to_telegram, analysis_text, [])
+
+            # ── X / Twitter ──────────────────────────────────────────────────
+            await loop.run_in_executor(None, _post_to_twitter, analysis_text, [])
+
         except Exception as e:
             logger.warning(f"Periodic analysis error: {e}")
             await asyncio.sleep(60)

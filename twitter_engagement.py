@@ -60,8 +60,8 @@ TARGET_ACCOUNTS: list[str] = [
 ]
 
 # ── Timing constants ───────────────────────────────────────────────────────────
-REPLY_POLL_INTERVAL_S   = 15 * 60          # how often to poll all accounts (15 min)
-REPLY_COOLDOWN_H        = 3                # minimum hours between replies to same account
+REPLY_POLL_INTERVAL_S   = 60 * 60          # poll every 60 min; 1 reply per cycle
+REPLY_COOLDOWN_H        = 6                # min hours between replies to same account
 FEAR_GREED_INTERVAL_S   = 6 * 3600        # Fear & Greed tweet cadence
 TOP_MOVERS_HOUR_UTC     = 9               # daily Top Movers post at 09:00 UTC
 ONCHAIN_INTERVAL_S      = 8 * 3600        # On-Chain Detective cadence
@@ -69,7 +69,8 @@ THREAD_INTERVAL_S       = 12 * 3600       # Thread Storytelling cadence
 HTTP_TIMEOUT            = 15              # seconds for external API requests
 
 # ── State file — persists last-replied tweet IDs across Railway restarts ───────
-_STATE_FILE = "/tmp/twitter_engagement_state.json"
+# IMPORTANT: must be on the /data volume (persistent), NOT /tmp (cleared on restart).
+_STATE_FILE = "/data/twitter_engagement_state.json"
 
 # ── OpenAI / AI base URL ───────────────────────────────────────────────────────
 _AI_API_KEY = (
@@ -82,92 +83,107 @@ _AI_BASE_URL = "https://api.openai.com/v1"
 # ── GPT prompts ────────────────────────────────────────────────────────────────
 
 _REPLY_PROMPT_TMPL = (
-    "You are @Ledgexs — a sharp crypto intelligence account on X (Twitter).\n"
-    "@{username} just tweeted:\n\n"
-    "\"{tweet_text}\"\n\n"
-    "Write a reply that STOPS people from scrolling. Rules:\n"
-    "- MAX 200 characters — COUNT CAREFULLY, never exceed\n"
-    "- Add a contrarian angle, a data point, or a bold take — NOT generic praise\n"
-    "- Sound like a confident analyst, not a fan\n"
-    "- 1 emoji max, only if it fits naturally\n"
-    "- No hashtags. No @mentions. No 'Great point!' openers.\n"
-    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
-    "Output ONLY the reply text, nothing else."
+    "You are a senior analyst at @Ledgexs, a crypto intelligence account.\n"
+    "@{username} just posted:\n\n\"{tweet_text}\"\n\n"
+    "Write ONE reply. Hard rules:\n"
+    "- HARD LIMIT: 200 characters. Count every character. Exceed this → output discarded.\n"
+    "- Must include at least one SPECIFIC data point, price level, or historical precedent.\n"
+    "  If the claim can't be backed by something concrete, challenge the premise instead.\n"
+    "- Objective: if the post is bullish, weigh the bearish case. If bearish, weigh the bull case.\n"
+    "- Tone: senior analyst — not a fan, not a troll, not a cheerleader.\n"
+    "- FORBIDDEN: 'Great point', 'Exactly', 'This', generic agreement, hype language.\n"
+    "- FORBIDDEN: hashtags, @mentions, cashtags ($SYMBOL — write BTC not $BTC).\n"
+    "- Write as if talking to a professional — dense, direct, no padding.\n"
+    "Output ONLY the reply text."
 )
 
 _FEAR_GREED_PROMPT_TMPL = (
-    "You are @Ledgexs — a sharp crypto intelligence account.\n"
-    "Fear & Greed Index right now: {value}/100 — '{label}'\n"
-    "7-day trend: {trend}\n\n"
-    "Write a tweet that will go viral. Rules:\n"
-    "- MAX 220 characters — COUNT CAREFULLY\n"
-    "- STRUCTURE: 1-2 shocking/contrarian lines, then a short punchy insight\n"
-    "- Use 1-2 emojis where they add punch (😱 📊 🔥 💀 📉 📈 etc)\n"
-    "- Short sentences. Line breaks for rhythm. Feels like a thread hook.\n"
-    "- No hashtags. No newspaper language. Make people want to retweet.\n"
-    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
+    "You are a senior market strategist at @Ledgexs.\n"
+    "Fear & Greed Index: {value}/100 — \"{label}\"\n"
+    "7-day readings (oldest→newest): {trend}\n\n"
+    "Write ONE analytical tweet. Rules:\n"
+    "- Open with the raw number and direction — state the fact, not the emotion.\n"
+    "- What does this reading historically precede? Give BOTH the bullish AND bearish historical outcome.\n"
+    "  Example: 'Sub-20 readings preceded 3 of the last 5 cycle bottoms — but also 2 extended bleeds.'\n"
+    "- If trend is declining, say declining. If conditions for reversal aren't confirmed, say so.\n"
+    "- No hype, no 'to the moon', no 'buy the fear'. Calibrated, probabilistic language.\n"
+    "- MAX 240 characters. Dense prose. 1-2 emojis only where they sharpen meaning.\n"
+    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
     "Output ONLY the tweet text."
 )
 
 _TOP_MOVERS_PROMPT_TMPL = (
-    "You are @Ledgexs — a sharp crypto intelligence account.\n"
+    "You are a quantitative analyst at @Ledgexs.\n"
     "24H market data:\n"
     "TOP GAINERS:\n{gainers}\n\n"
     "TOP LOSERS:\n{losers}\n\n"
-    "Write ONE punchy insight tweet (NOT a list recap — that's already in the header). Rules:\n"
-    "- MAX 180 characters — COUNT CAREFULLY\n"
-    "- Focus on WHY the market is moving, what it signals\n"
-    "- Bold, confident, analyst voice\n"
-    "- 1 emoji max\n"
-    "- No hashtags\n"
-    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
-    "Output ONLY the insight sentence(s)."
+    "Write ONE sharp analytical insight (NOT a recap — the data header already lists the names). Rules:\n"
+    "- Identify the structural reason behind the divergence: sector rotation? macro catalyst? "
+    "  leverage unwind? narrative shift? Be specific.\n"
+    "- Flag if any gain looks unsustainable (thin volume, no catalyst, post-pump pattern).\n"
+    "- Quantify where possible: 'X% gain on Y% below-avg volume = distribution risk.'\n"
+    "- Objective: don't celebrate gains or dramatise losses. Analyse.\n"
+    "- MAX 180 characters. Analyst voice. 1 emoji max.\n"
+    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
+    "Output ONLY the insight text."
 )
 
 _ONCHAIN_PROMPT_TMPL = (
-    "You are @Ledgexs — a sharp crypto on-chain analyst on X.\n"
-    "Real on-chain data right now:\n\n"
+    "You are a senior on-chain analyst at @Ledgexs. You interpret raw blockchain data.\n"
+    "Live on-chain readings:\n\n"
     "BITCOIN:\n{btc_data}\n\n"
     "ETHEREUM:\n{eth_data}\n\n"
-    "Write a viral 'detective' tweet. Rules:\n"
-    "- MAX 220 characters — COUNT CAREFULLY\n"
-    "- Lead with the most alarming/interesting number\n"
-    "- Tell people what it MEANS — what big players are doing\n"
-    "- Investigative, urgent tone. Makes people feel like insiders.\n"
-    "- 1-2 emojis for emphasis (🔍 🐋 🚨 etc)\n"
-    "- No hashtags\n"
-    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
+    "Write ONE on-chain brief. Rules:\n"
+    "- Lead with the single most anomalous or high-signal data point across both chains.\n"
+    "- Interpret BEHAVIOUR, not price: are large holders accumulating, distributing, or neutral?\n"
+    "  What does the mempool/fee/congestion data imply about urgency?\n"
+    "- If BTC and ETH diverge meaningfully, call it out — divergence is often the signal.\n"
+    "- If data is ambiguous or inconclusive, say so. Never force a bullish or bearish conclusion.\n"
+    "- Precision over drama. Write like a quant brief, not a news headline.\n"
+    "- MAX 240 characters. 1-2 emojis (🔍 🐋 📊 ⚡ only).\n"
+    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
     "Output ONLY the tweet text."
 )
 
 _THREAD_PROMPT_TMPL = (
-    "You are @Ledgexs — a sharp crypto intelligence account on X (Twitter).\n"
+    "You are a senior crypto research analyst at @Ledgexs.\n"
     "Live market context:\n{market_context}\n\n"
-    "Write a 4-tweet viral THREAD on: '{topic}'\n\n"
-    "Rules:\n"
-    "- Tweet 1: SCROLL-STOPPING hook. Bold claim or shocking stat. End with '🧵' MAX 180 chars.\n"
-    "- Tweet 2: The evidence — specific numbers from the market context above. MAX 240 chars.\n"
-    "- Tweet 3: What most people are missing / the contrarian angle. MAX 240 chars.\n"
-    "- Tweet 4: Bold prediction or call-to-action. MAX 200 chars.\n"
-    "- Short punchy sentences. Line breaks. 1-2 emojis per tweet where impactful.\n"
-    "- No hashtags. Sounds like a confident analyst, not a newsletter.\n"
-    "- MUST reference actual numbers from the market context.\n"
-    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags per tweet.\n"
-    "Output ONLY a JSON array of 4 strings. Example:\n"
+    "Write a 4-tweet research thread on: '{topic}'\n\n"
+    "Each tweet MUST advance a single coherent argument — not four separate observations.\n\n"
+    "Tweet 1 — HOOK (MAX 180 chars): One counterintuitive or underreported claim "
+    "backed by a specific number or historical fact. End with 🧵. "
+    "Do NOT open with 'Did you know' or 'Here's why'.\n\n"
+    "Tweet 2 — EVIDENCE (MAX 240 chars): Cite SPECIFIC figures from the market context. "
+    "No vague statements. Every claim needs a number. Show your work.\n\n"
+    "Tweet 3 — NUANCE (MAX 240 chars): The part most analysts miss. "
+    "Include a BEARISH risk, a historical caveat where the thesis failed, or a conflicting signal. "
+    "A thread without a real counter-argument is just propaganda.\n\n"
+    "Tweet 4 — CONCLUSION (MAX 200 chars): A calibrated, probabilistic outlook. "
+    "NOT a price prediction. What specific metric or event would CONFIRM or DENY the thesis?\n\n"
+    "Tone: senior analyst writing for institutional-grade traders. Precise. Unsentimental.\n"
+    "FORBIDDEN in all tweets: hashtags, cashtags ($SYMBOL — write BTC not $BTC), "
+    "'NFA', 'DYOR', 'to the moon', hype language.\n\n"
+    "Output ONLY a valid JSON array of exactly 4 strings:\n"
     "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\"]"
 )
 
 _THREAD_TOPICS = [
-    "Why Bitcoin dominance rising or falling matters for altcoin season",
-    "What on-chain whale accumulation signals about the next 30 days",
-    "The real reason crypto market cycles are compressing",
-    "Why stablecoin supply growth is a leading indicator for bull runs",
-    "What the Fear & Greed Index actually predicts — and where it fails",
-    "The hidden correlation between macro interest rates and crypto prices",
-    "Why Ethereum gas fees spiking is actually bullish signal",
-    "What top CEX inflows/outflows tell us about retail vs institutional behaviour",
-    "The difference between a dead-cat bounce and a true trend reversal",
-    "Why DeFi TVL is the most overlooked crypto health metric",
+    "Why Bitcoin dominance signals are misleading at current levels — and what to watch instead",
+    "The on-chain metric that preceded every major crypto top in the last two cycles",
+    "Why stablecoin supply growth precedes bull runs — but also why it's failing as a signal now",
+    "Fear & Greed at extremes: when the contrarian trade works and when it destroys accounts",
+    "The real relationship between US 10Y yields and crypto risk appetite — it's not what you think",
+    "CEX outflow surges: genuine accumulation signal or just self-custody narrative?",
+    "Dead-cat bounce vs true reversal: the 3 on-chain conditions that separate them",
+    "Why most altcoin season analysis is wrong — and what BTC dominance actually measures",
+    "The hidden cost of crypto market cycles compressing: who wins and who loses",
+    "DeFi TVL as a market health metric: what it shows, what it hides, and when it lies",
+    "Why exchange reserve depletion is both a bullish signal and a systemic risk",
+    "The funding rate trap: how perpetual futures sentiment misleads retail traders",
+    "Miner behaviour near cycle bottoms: capitulation signals and their false positives",
+    "Institutional vs retail flow divergence — how to read it and why it matters now",
+    "The liquidity mirage: why on-paper crypto market caps overstate real exit liquidity",
+    "Network value to transaction ratio (NVT): the most abused metric in crypto analysis",
 ]
 
 # ── Client initialisation ──────────────────────────────────────────────────────
@@ -353,145 +369,170 @@ def _safe_get(url: str, params: dict | None = None) -> dict | list | None:
 
 async def _reply_monitor() -> None:
     """
-    Every 15 minutes, polls each account in TARGET_ACCOUNTS via Twitter v2
-    get_users_tweets and replies via v1.1 update_status.
+    Every 60 minutes: ONE reply posted across TARGET_ACCOUNTS.
 
-    REQUIREMENTS (PPU model — credits are consumed per request):
-    - App must have READ permission, not Write-only.
-    - Fix 403-453: developer.twitter.com → Apps → [app] → Settings →
-      User authentication settings → set "Read" or "Read and Write"
-      → Save → regenerate TWITTER_ACCESS_TOKEN + TWITTER_ACCESS_SECRET.
+    Logic per cycle:
+      1. Shuffle accounts for variety.
+      2. Collect eligible accounts (not in 6h cooldown).
+      3. Priority: pick the first eligible account that has a tweet from the last 60 min.
+      4. Fallback: if none tweeted recently, pick the first eligible account
+         and reply to their latest tweet (any age, skip if already replied).
+      5. Post exactly 1 reply and stop. Never skip a cycle silently.
+
+    Requirements: Twitter app must have READ permission (not Write-only).
     """
-    await asyncio.sleep(60)
-    logger.info("twitter_engagement: reply_monitor started — %d accounts.", len(TARGET_ACCOUNTS))
+    await asyncio.sleep(300)  # 5 min startup grace — let other systems settle
+    logger.info("twitter_engagement: reply_monitor started — %d accounts, 60-min cycle.", len(TARGET_ACCOUNTS))
 
     while True:
-        if _twitter_v2 is None:
-            await asyncio.sleep(REPLY_POLL_INTERVAL_S)
-            continue
-
-        loop = asyncio.get_running_loop()
-        for username in TARGET_ACCOUNTS:
+        if _twitter_v2 is not None:
+            loop = asyncio.get_running_loop()
             try:
-                await loop.run_in_executor(None, _check_and_reply_one, username)
+                await loop.run_in_executor(None, _do_reply_round)
             except Exception as exc:
-                logger.warning("twitter_engagement: reply_monitor error for @%s: %s", username, exc)
-            await asyncio.sleep(5)
+                logger.warning("twitter_engagement: reply_monitor cycle error: %s", exc)
 
-        logger.info(
-            "twitter_engagement: reply_monitor round complete — sleeping %d min.",
-            REPLY_POLL_INTERVAL_S // 60,
-        )
+        logger.info("twitter_engagement: reply_monitor cycle done — sleeping 60 min.")
         await asyncio.sleep(REPLY_POLL_INTERVAL_S)
 
 
-def _check_and_reply_one(username: str) -> None:
-    """
-    Synchronous: check @username for a fresh tweet via v2 and reply via v1.1.
+def _resolve_user_id(username: str) -> str | None:
+    """Return cached numeric user ID for username, or None on failure."""
+    if username in _reply_user_id_cache:
+        return _reply_user_id_cache[username]
+    try:
+        resp = _twitter_v2.get_user(username=username, user_auth=True)
+        if resp and resp.data:
+            uid = str(resp.data.id)
+            _reply_user_id_cache[username] = uid
+            return uid
+        logger.warning("twitter_engagement: could not resolve @%s (empty response)", username)
+    except Exception as exc:
+        err = str(exc)
+        if "453" in err or "403" in err:
+            logger.warning(
+                "twitter_engagement: READ DENIED resolving @%s — set READ permission at "
+                "developer.twitter.com → Apps → [app] → User auth settings.", username
+            )
+        else:
+            logger.warning("twitter_engagement: could not resolve @%s: %s", username, exc)
+    return None
 
-    If you see 403-453 errors: your app needs READ permission.
-    developer.twitter.com → Apps → [app] → Settings → User authentication
-    settings → set "Read" or "Read and Write" → Save → regenerate tokens.
-    PPU credits are sufficient; permission level is the only requirement.
-    """
-    global _reply_user_id_cache
 
-    replied_data = _state["replied"].get(username, {})
-    last_ts: float = replied_data.get("ts", 0.0)
-
-    if time.time() - last_ts < REPLY_COOLDOWN_H * 3600:
-        logger.debug(
-            "twitter_engagement: @%s cooldown active (last %.0fm ago) — skipping.",
-            username, (time.time() - last_ts) / 60,
-        )
-        return
-
-    # ── Step 1: resolve username → numeric user ID (cached) ──────────────────
-    if username not in _reply_user_id_cache:
-        try:
-            resp = _twitter_v2.get_user(username=username, user_auth=True)
-            if resp and resp.data:
-                _reply_user_id_cache[username] = str(resp.data.id)
-            else:
-                logger.warning("twitter_engagement: could not resolve @%s", username)
-                return
-        except Exception as exc:
-            err_str = str(exc)
-            if "453" in err_str or "403" in err_str:
-                logger.warning(
-                    "twitter_engagement: READ DENIED for @%s (403/453). "
-                    "Set app READ permission at developer.twitter.com → Apps → "
-                    "[app] → User auth settings, then regenerate access tokens.",
-                    username,
-                )
-            else:
-                logger.warning("twitter_engagement: get_user @%s failed: %s", username, exc)
-            return
-
-    user_id = _reply_user_id_cache[username]
-
-    # ── Step 2: fetch recent original tweets (v2) ─────────────────────────────
+def _fetch_latest_tweet(user_id: str, username: str):
+    """Fetch up to 10 recent original tweets via v2. Returns list or None."""
     try:
         resp = _twitter_v2.get_users_tweets(
             id=user_id,
-            max_results=5,
+            max_results=10,
             exclude=["retweets", "replies"],
             tweet_fields=["created_at", "text"],
             user_auth=True,
         )
+        return resp.data if (resp and resp.data) else []
     except Exception as exc:
-        err_str = str(exc)
-        if "453" in err_str or "403" in err_str:
+        err = str(exc)
+        if "453" in err or "403" in err:
             logger.warning(
-                "twitter_engagement: READ DENIED for @%s timeline (403/453). "
-                "App needs READ permission — regenerate tokens after setting it.",
+                "twitter_engagement: READ DENIED fetching @%s timeline — check app permissions.",
                 username,
             )
         else:
             logger.warning("twitter_engagement: get_users_tweets @%s failed: %s", username, exc)
+        return None
+
+
+def _do_reply_round() -> None:
+    """
+    Synchronous: one full reply cycle.
+    Picks ONE eligible account, finds a tweet to reply to, posts the reply.
+    """
+    import random
+
+    now = time.time()
+    cooldown_s = REPLY_COOLDOWN_H * 3600
+    recent_window_s = 3600  # "recent" = posted within the last 60 min
+
+    # ── Build candidate list (shuffle for variety) ──────────────────────────
+    candidates = list(TARGET_ACCOUNTS)
+    random.shuffle(candidates)
+
+    eligible: list[str] = [
+        u for u in candidates
+        if now - _state["replied"].get(u, {}).get("ts", 0.0) >= cooldown_s
+    ]
+
+    if not eligible:
+        logger.info(
+            "twitter_engagement: all %d accounts in %dh cooldown — skipping cycle.",
+            len(TARGET_ACCOUNTS), REPLY_COOLDOWN_H,
+        )
         return
 
-    if not resp or not resp.data:
-        return
+    # ── Pass 1: look for a tweet posted within the last 60 min ──────────────
+    for username in eligible:
+        uid = _resolve_user_id(username)
+        if not uid:
+            continue
+        tweets = _fetch_latest_tweet(uid, username)
+        if tweets is None:
+            continue   # API error for this account — try next
+        for tw in tweets:
+            created_at = getattr(tw, "created_at", None)
+            if created_at and (now - created_at.timestamp()) <= recent_window_s:
+                tid = str(tw.id)
+                if tid == _state["replied"].get(username, {}).get("tweet_id", ""):
+                    continue  # already replied
+                if _attempt_reply(username, tw):
+                    return    # done for this cycle
 
-    last_replied_id = replied_data.get("tweet_id", "")
-    target_tweet = None
-    for tw in resp.data:
-        tid = str(tw.id)
-        if tid == last_replied_id:
-            break
-        # Skip tweets older than 30 minutes
-        created_at = getattr(tw, "created_at", None)
-        if created_at:
-            age_min = (time.time() - created_at.timestamp()) / 60
-            if age_min > 30:
-                continue
-        target_tweet = tw
-        break
+    # ── Pass 2 (fallback): reply to latest tweet from any eligible account ───
+    logger.info(
+        "twitter_engagement: no recent tweets found — falling back to latest available tweet."
+    )
+    for username in eligible:
+        uid = _resolve_user_id(username)
+        if not uid:
+            continue
+        tweets = _fetch_latest_tweet(uid, username)
+        if not tweets:
+            continue
+        for tw in tweets:
+            tid = str(tw.id)
+            if tid == _state["replied"].get(username, {}).get("tweet_id", ""):
+                continue  # already replied to this one
+            if _attempt_reply(username, tw):
+                return
 
-    if target_tweet is None:
-        return
+    logger.info("twitter_engagement: no replyable tweet found across all eligible accounts this cycle.")
 
-    tweet_text = getattr(target_tweet, "text", "") or ""
-    clean_text  = re.sub(r"https?://\S+", "", tweet_text).strip()
-    clean_text  = re.sub(r"@\S+", "", clean_text).strip()
-    if len(clean_text) < 15:
-        return
 
-    prompt = _REPLY_PROMPT_TMPL.format(username=username, tweet_text=clean_text[:400])
-    reply_text = _gpt(prompt, max_tokens=80, temperature=0.85)
+def _attempt_reply(username: str, tw: Any) -> bool:
+    """
+    Generate AI reply and post it. Returns True on success.
+    """
+    tweet_text = getattr(tw, "text", "") or ""
+    clean = re.sub(r"https?://\S+", "", tweet_text).strip()
+    clean = re.sub(r"@\S+", "", clean).strip()
+
+    if len(clean) < 15:
+        logger.debug("twitter_engagement: @%s tweet too short to reply — skipping.", username)
+        return False
+
+    prompt = _REPLY_PROMPT_TMPL.format(username=username, tweet_text=clean[:400])
+    reply_text = _gpt(prompt, max_tokens=100, temperature=0.8)
 
     if not reply_text or len(reply_text) < 10:
-        return
+        logger.warning("twitter_engagement: GPT returned empty reply for @%s.", username)
+        return False
 
-    reply_text = re.sub(r"@\S+", "", reply_text).strip()
-    # Hard truncate to 275 chars safety (should never hit with proper prompting)
-    reply_text = reply_text[:275]
+    reply_text = re.sub(r"@\S+", "", reply_text).strip()[:275]
 
-    success = _reply_v1(str(target_tweet.id), reply_text, username)
+    success = _reply_v1(str(tw.id), reply_text, username)
     if success:
-        _state["replied"][username] = {"tweet_id": str(target_tweet.id), "ts": time.time()}
+        _state["replied"][username] = {"tweet_id": str(tw.id), "ts": time.time()}
         _save_state(_state)
+    return success
 
 
 # ── Feature 2: Fear & Greed Index ─────────────────────────────────────────────

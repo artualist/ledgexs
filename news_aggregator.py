@@ -49,10 +49,7 @@ SOURCE_CHANNELS: list[str] = [
     "@coinmuhendisihaber",
     "@news_crypto",
     "@jrkripto",
-    # ── RULE ─────────────────────────────────────────────────────────────────
     # Only add channels here whose posts you WANT published to @Ledgexs.
-    # If you only want to auto-comment on a Twitter account WITHOUT picking up
-    # their Telegram posts, add them to TWITTER_PERIODIC_TARGETS below instead.
 ]
 
 # Normalised set for fast O(1) membership check (lowercase, no @)
@@ -80,23 +77,6 @@ _WS_RE             = re.compile(r'\s+')
 FINGERPRINT_WORDS = 25
 FINGERPRINT_SIM_THRESHOLD = 0.55    # Jaccard similarity above this → duplicate
 FINGERPRINT_WINDOW_S = 3 * 3600     # how long to keep fingerprints (3 hours)
-
-# ── Twitter / Telegram comment cooldowns ─────────────────────────────────────
-# Prevents replying to the same tweet twice and rate-limits per-account
-TWITTER_COMMENT_COOLDOWN_H = 6      # hours before we can comment on the same account again
-# Telegram auto-comment: channels where we will try to post a comment reply.
-# Must have the "Comments" / discussion feature enabled in Telegram.
-# Leave empty to disable Telegram commenting entirely.
-TELEGRAM_COMMENT_SOURCES: set[str] = {
-    "cointelegraph",
-    "watcherguru",
-    "cryptoquant_official",
-    "news_crypto",
-    "lookonchainchannel",
-    "fin_watch",
-    "bitcoin",
-}
-TELEGRAM_COMMENT_COOLDOWN_S = 30 * 60   # 30 min between comments in the same channel
 
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
@@ -138,7 +118,7 @@ AI_COMBINED_PROMPT = (
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
     "2. LENGTH: MAXIMUM 1-2 sentences summarising the news.\n"
-    "3. AI INSIGHT: MAXIMUM ONLY 1 sentence of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
+    "3. AI INSIGHT: 1-2 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and source citations.\n\n"
 
@@ -519,21 +499,26 @@ async def _get_market_data(coin: str) -> str:
 
 async def _periodic_market_analysis(tg_client: Any) -> None:
     """
-    Every 4 hours:
-      1. Fetch the top-3 trending coins from CoinGecko.
-      2. Pick only the #1 trending coin (not all three — avoids flooding).
-      3. Generate a short AI market insight (HTML, max 2 sentences).
-      4. Post to Telegram (@Ledgexs) AND X/Twitter.
+    Every 4 hours, picks the #1 trending coin from CoinGecko top-3, generates
+    an AI market insight, and posts to Telegram AND Twitter (text-only).
+
+    BUG FIX: sleep was at the TOP of the loop, causing the first post to be
+    delayed 4 hours after startup.  It is now at the BOTTOM so the first
+    analysis runs ~30 s after the bot connects.
     """
+    # Short initial delay so the bot fully connects before the first post.
+    await asyncio.sleep(30)
     while True:
         try:
-            await asyncio.sleep(14400)   # 4-hour cadence
             trending_coins = await _get_trending_coins()
             if not trending_coins:
+                logger.warning("periodic_market_analysis: no trending coins returned — retrying in 15 min.")
+                await asyncio.sleep(900)
                 continue
 
             coin        = trending_coins[0]    # top-1 trending coin only
             market_data = await _get_market_data(coin)
+            logger.info("periodic_market_analysis: posting analysis for $%s", coin)
             prompt      = MARKET_INSIGHT_PROMPT.format(data=market_data)
             raw_text    = await _call_gpt_for_analysis(prompt)
 
@@ -545,12 +530,16 @@ async def _periodic_market_analysis(tg_client: Any) -> None:
             # ── Telegram ─────────────────────────────────────────────────────
             await loop.run_in_executor(None, _post_to_telegram, analysis_text, [])
 
-            # ── X / Twitter ──────────────────────────────────────────────────
+            # ── X / Twitter (text-only — no media needed for market analysis)
             await loop.run_in_executor(None, _post_to_twitter, analysis_text, [])
 
+            logger.info("periodic_market_analysis: done — sleeping 4 h.")
+
         except Exception as e:
-            logger.warning(f"Periodic analysis error: {e}")
-            await asyncio.sleep(60)
+            logger.warning("periodic_market_analysis error: %s", e)
+
+        # Sleep AFTER posting so the first run happens immediately at startup.
+        await asyncio.sleep(14400)   # 4-hour cadence
 
 
 # ── Text helpers ──────────────────────────────────────────────────────────────
@@ -777,468 +766,6 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
         logger.warning("news_aggregator: X post failed: %s", exc)
 
 
-# ── Twitter Auto Comment Helper ───────────────────────────────────────────────
-
-# ── Twitter auto-comment — SOURCE-TRIGGERED ───────────────────────────────────
-# These accounts are auto-commented WHEN we publish a news item FROM their
-# Telegram channel.  Every key here MUST also appear in SOURCE_CHANNELS.
-# If the Telegram channel is absent from SOURCE_CHANNELS, we never receive
-# its messages and this mapping is never reached.
-TWITTER_TARGET_MAPPING: dict[str, str] = {
-    # Telegram username (no @, lowercase)  →  Twitter @username
-    "cointelegraph":           "Cointelegraph",
-    "watcherguru":             "WatcherGuru",
-    "bitcoinmagazinetelegram": "BitcoinMagazine",
-    "ninjanewstr":             "ninjanewsx",
-}
-
-# ── Twitter auto-comment — PERIODIC / INDEPENDENT ─────────────────────────────
-# These Twitter accounts get an @Ledgexs reply every PERIODIC_COMMENT_INTERVAL_M
-# minutes, based on their most recent tweet — completely independent of any
-# Telegram source channel.  Add accounts here when you want to comment on their
-# Twitter activity WITHOUT republishing their Telegram posts.
-TWITTER_PERIODIC_TARGETS: list[str] = [
-    "lookonchain",        # @lookonchain
-    "CoinBureau",         # @CoinBureau
-    "bulltheoryio",       # @bulltheoryio
-    "cryptoquant_com",    # @cryptoquant_com
-]
-PERIODIC_COMMENT_INTERVAL_M = 45   # minutes between periodic comment rounds
-
-# Runtime username → numeric ID cache (avoids a lookup API call on every news item)
-_twitter_id_cache: dict[str, str] = {}
-
-# Spam-protection cooldown state.
-# Twitter: tw_username → (last_replied_tweet_id, timestamp)
-# Telegram: tg_username → timestamp of last comment posted
-_twitter_comment_cooldown: dict[str, tuple[str, float]] = {}
-_telegram_comment_cooldown: dict[str, float] = {}
-
-
-def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: str) -> None:
-    """
-    Synchronous Twitter auto-comment — resolves @username to numeric ID on
-    first use (cached in _twitter_id_cache), then replies to the most recent
-    standalone (root) tweet of that account.
-
-    Why username instead of hardcoded ID:
-      Numeric IDs never change but are error-prone to maintain manually.
-      Using get_user(username=...) lets us store readable names and have the
-      API always return the authoritative ID.
-
-    Why filter for root tweets only (in_reply_to_user_id is None):
-      get_users_tweets includes the account's own replies to other users.
-      Replying inside a foreign conversation triggers 403 even when the target
-      account has "Everyone can reply" — the restriction comes from the root
-      tweet's owner, not the target.
-    """
-    tw_username = TWITTER_TARGET_MAPPING[tg_username.lower()]
-
-    # ── Step 1: resolve username → numeric ID (use cache after first lookup) ──
-    if tw_username not in _twitter_id_cache:
-        user_resp = _twitter_v2.get_user(username=tw_username, user_auth=True)
-        if user_resp.data is None:
-            logger.warning(
-                "news_aggregator: Twitter user @%s not found — skipping auto-comment.",
-                tw_username,
-            )
-            return
-        _twitter_id_cache[tw_username] = str(user_resp.data.id)
-        logger.debug("news_aggregator: resolved @%s → %s", tw_username, _twitter_id_cache[tw_username])
-
-    twitter_id = _twitter_id_cache[tw_username]
-
-    # ── Cooldown check ────────────────────────────────────────────────────────
-    # Skip if we already commented on this account within TWITTER_COMMENT_COOLDOWN_H hours.
-    cooldown_entry = _twitter_comment_cooldown.get(tw_username)
-    if cooldown_entry:
-        _last_tweet_id, _last_ts = cooldown_entry
-        if time.time() - _last_ts < TWITTER_COMMENT_COOLDOWN_H * 3600:
-            logger.info(
-                "news_aggregator: skipping auto-comment on @%s — cooldown active (last %.0fm ago).",
-                tw_username, (time.time() - _last_ts) / 60,
-            )
-            return
-
-    # ── Step 2: fetch recent tweets ──────────────────────────────────────────
-    # FIX 404: exclude=["retweets"] is critical.
-    # Retweet IDs returned by the v2 API 404 on the v1.1 update_status endpoint
-    # because the ID belongs to the retweet record, not the original tweet.
-    tweets = _twitter_v2.get_users_tweets(
-        id=twitter_id,
-        max_results=20,
-        exclude=["retweets"],
-        tweet_fields=["conversation_id", "in_reply_to_user_id", "reply_settings"],
-        user_auth=True,
-    )
-
-    if not tweets.data:
-        logger.info("news_aggregator: no tweets found for @%s — skipping auto-comment.", tw_username)
-        return
-
-    # Pick the most recent root tweet (not itself a reply) where anyone can reply.
-    # IMPORTANT: Tweepy stores tweet_fields extras in tweet.data (dict), NOT as
-    # direct attributes — getattr(tweet, "reply_settings") always returns None.
-    # We must use tweet.data.get() for the correct value.
-    # Twitter API returns "everyone" | "mentionedUsers" | "subscribers" (camelCase).
-    target_tweet = None
-    for tweet in tweets.data:
-        raw = tweet.data if hasattr(tweet, "data") else {}
-        if raw.get("in_reply_to_user_id") is not None:
-            continue  # skip threads / replies
-        settings = (raw.get("reply_settings") or "everyone").lower()
-        # Normalise: "mentionedusers" / "mentioned_users" both map to restricted
-        is_open  = settings in ("everyone", "")
-        logger.debug(
-            "news_aggregator: @%s tweet %s reply_settings=%r open=%s",
-            tw_username, tweet.id, settings, is_open,
-        )
-        if is_open:
-            target_tweet = tweet
-            break
-
-    if target_tweet is None:
-        logger.info(
-            "news_aggregator: no open-reply tweet found for @%s (all restricted or replies) — skipped.",
-            tw_username,
-        )
-        return
-
-    # ── Step 3: post the reply via v1.1 API ──────────────────────────────────
-    # WHY v1.1 and not v2:
-    # Twitter API v2 create_tweet with in_reply_to_tweet_id returns 403
-    # "you have not been mentioned or otherwise engaged" for accounts that
-    # have never previously interacted with our bot — regardless of the
-    # target tweet's reply_settings field.  This is a v2-specific enforcement.
-    # The v1.1 update_status endpoint does NOT have this restriction and allows
-    # replying to any public tweet.  We keep the v2 client for reading
-    # (get_user, get_users_tweets) and fall back to create_tweet if v1.1 is absent.
-    plain_reply = _strip_html(reply_text).strip()
-    tweet_id_str = str(target_tweet.id)
-    replied = False
-    if _twitter_v1 is not None:
-        try:
-            _twitter_v1.update_status(
-                status=plain_reply,
-                in_reply_to_status_id=tweet_id_str,
-                auto_populate_reply_metadata=True,
-            )
-            logger.info(
-                "news_aggregator: Replied (v1.1) to @%s tweet (id=%s) — Success!",
-                tw_username, tweet_id_str,
-            )
-            replied = True
-        except Exception as exc:
-            logger.warning(
-                "news_aggregator: v1.1 reply to @%s tweet %s failed: %s",
-                tw_username, tweet_id_str, exc,
-            )
-    if not replied:
-        # v1.1 not available or failed — fall back to v2
-        try:
-            _twitter_v2.create_tweet(
-                text=plain_reply,
-                in_reply_to_tweet_id=tweet_id_str,
-                user_auth=True,
-            )
-            logger.info(
-                "news_aggregator: Replied (v2 fallback) to @%s tweet (id=%s) — Success!",
-                tw_username, tweet_id_str,
-            )
-            replied = True
-        except Exception as exc:
-            logger.warning(
-                "news_aggregator: v2 reply to @%s tweet %s failed: %s",
-                tw_username, tweet_id_str, exc,
-            )
-    # Save cooldown only on success so a transient error doesn't lock us out
-    if replied:
-        _twitter_comment_cooldown[tw_username] = (tweet_id_str, time.time())
-
-
-async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
-    """Fire an auto-comment triggered by a news post from a SOURCE_CHANNELS channel."""
-    if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
-        return
-
-    try:
-        prompt = (
-            f"News Content: {news_context[:300]}\n"
-            f"Latest Tweet from {tg_username}: (see context)\n"
-            "CRITICAL: If the News Content and the Latest Tweet are completely unrelated, "
-            "DO NOT reply with specific details from the news. Instead, provide a generic "
-            "professional market insight relevant to the market current sentiment. "
-            "Tone: @Ledgexs brand voice. No hashtags, no emojis."
-        )
-        reply_text = await _call_gpt_for_analysis(prompt)
-
-        # Randomised delay to appear natural
-        await asyncio.sleep(random.randint(60, 180))
-
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(
-            None,
-            _sync_twitter_auto_comment,
-            tg_username,
-            news_context,
-            reply_text,
-        )
-    except Exception as e:
-        logger.warning(f"Twitter auto-comment failed: {e}")
-
-
-def _sync_periodic_comment_one(tw_username: str) -> None:
-    """Synchronous: fetch the latest open-reply tweet from tw_username and reply.
-
-    Used by the periodic comment loop for accounts NOT in SOURCE_CHANNELS.
-    Shares the same v1.1 reply path as _sync_twitter_auto_comment.
-    """
-    if _twitter_v2 is None or _twitter_v1 is None:
-        return
-
-    # Resolve username → numeric ID (reuse the same cache as source-triggered comments)
-    if tw_username not in _twitter_id_cache:
-        try:
-            user_resp = _twitter_v2.get_user(username=tw_username, user_auth=True)
-            if user_resp.data is None:
-                logger.warning("periodic comment: @%s not found on Twitter.", tw_username)
-                return
-            _twitter_id_cache[tw_username] = str(user_resp.data.id)
-        except Exception as exc:
-            logger.warning("periodic comment: could not resolve @%s: %s", tw_username, exc)
-            return
-
-    twitter_id = _twitter_id_cache[tw_username]
-
-    # ── Cooldown check ────────────────────────────────────────────────────────
-    cooldown_entry = _twitter_comment_cooldown.get(tw_username)
-    if cooldown_entry:
-        _last_tid, _last_ts = cooldown_entry
-        if time.time() - _last_ts < TWITTER_COMMENT_COOLDOWN_H * 3600:
-            logger.info(
-                "periodic comment: @%s cooldown active (last %.0fm ago) — skipping.",
-                tw_username, (time.time() - _last_ts) / 60,
-            )
-            return
-
-    # ── Fetch recent tweets ────────────────────────────────────────────────────
-    # FIX 404: exclude=["retweets"] is required.
-    # Retweet IDs returned by v2 API 404 on v1.1 update_status because the ID
-    # belongs to the retweet record, not the original tweet being retweeted.
-    try:
-        tweets = _twitter_v2.get_users_tweets(
-            id=twitter_id,
-            max_results=15,
-            exclude=["retweets"],
-            tweet_fields=["conversation_id", "in_reply_to_user_id", "reply_settings", "text"],
-            user_auth=True,
-        )
-    except Exception as exc:
-        logger.warning("periodic comment: get_users_tweets for @%s failed: %s", tw_username, exc)
-        return
-
-    if not tweets.data:
-        logger.info("periodic comment: no tweets found for @%s.", tw_username)
-        return
-
-    # Find the most recent root tweet (not a reply) where anyone can reply.
-    # Also skip if we already replied to this exact tweet (same ID as last time).
-    last_replied_id = cooldown_entry[0] if cooldown_entry else ""
-    target_tweet    = None
-    tweet_text      = ""
-    for tweet in tweets.data:
-        raw = tweet.data if hasattr(tweet, "data") else {}
-        if raw.get("in_reply_to_user_id") is not None:
-            continue                                 # skip replies
-        if str(tweet.id) == last_replied_id:
-            logger.info(
-                "periodic comment: @%s — most recent tweet %s already replied to — skipping.",
-                tw_username, tweet.id,
-            )
-            return
-        settings = (raw.get("reply_settings") or "everyone").lower()
-        if settings in ("everyone", ""):
-            target_tweet = tweet
-            tweet_text   = raw.get("text", "")
-            break
-
-    if target_tweet is None:
-        logger.info("periodic comment: no open-reply tweet for @%s.", tw_username)
-        return
-
-    # ── Generate reply via AI ─────────────────────────────────────────────────
-    prompt = (
-        f"You are @Ledgexs — a professional crypto intelligence account.\n"
-        f"The following tweet was just posted by @{tw_username}:\n\n"
-        f"\"{tweet_text[:400]}\"\n\n"
-        "Write a SHORT reply (1-2 sentences MAX) that adds a professional crypto market insight "
-        "relevant to what they said. Sound natural, not like an ad. "
-        "No hashtags. No emojis. No @mentions. @Ledgexs brand voice only."
-    )
-    try:
-        ai = _make_ai_client()
-        if ai is None:
-            return
-        resp = ai.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=80,
-        )
-        reply_text = (resp.choices[0].message.content or "").strip()
-    except Exception as exc:
-        logger.warning("periodic comment: AI generation for @%s failed: %s", tw_username, exc)
-        return
-
-    if not reply_text or len(reply_text) < 10:
-        return
-
-    # ── Post reply via v1.1 ───────────────────────────────────────────────────
-    tweet_id_str = str(target_tweet.id)
-    replied = False
-    try:
-        _twitter_v1.update_status(
-            status=reply_text,
-            in_reply_to_status_id=tweet_id_str,
-            auto_populate_reply_metadata=True,
-        )
-        logger.info(
-            "periodic comment: replied to @%s tweet %s — %r",
-            tw_username, tweet_id_str, reply_text[:60],
-        )
-        replied = True
-    except Exception as exc:
-        logger.warning("periodic comment: reply to @%s tweet %s failed: %s", tw_username, tweet_id_str, exc)
-        # Fallback to v2 if v1.1 fails
-        try:
-            _twitter_v2.create_tweet(
-                text=reply_text,
-                in_reply_to_tweet_id=tweet_id_str,
-                user_auth=True,
-            )
-            logger.info("periodic comment: replied (v2 fallback) to @%s tweet %s.", tw_username, tweet_id_str)
-            replied = True
-        except Exception as exc2:
-            logger.warning("periodic comment: v2 fallback also failed for @%s: %s", tw_username, exc2)
-
-    if replied:
-        _twitter_comment_cooldown[tw_username] = (tweet_id_str, time.time())
-
-
-async def _tg_auto_comment(
-    source_username: str,
-    source_msg: Any,
-    news_context: str,
-    tg_client: Any,
-) -> None:
-    """Post a comment reply on the original source-channel message in Telegram.
-
-    Requirements:
-    - source_username must be in TELEGRAM_COMMENT_SOURCES.
-    - The Telegram channel must have the Comments / Discussion feature enabled
-      (i.e. a linked discussion group).  If it doesn't, Telethon raises
-      ChatWriteForbiddenError or similar — we catch and log, never crash.
-    - A per-channel cooldown (TELEGRAM_COMMENT_COOLDOWN_S) prevents flooding.
-    """
-    uname = source_username.lower().lstrip("@")
-    if uname not in TELEGRAM_COMMENT_SOURCES:
-        return
-    if tg_client is None or source_msg is None:
-        return
-
-    # Per-channel cooldown check
-    last_ts = _telegram_comment_cooldown.get(uname, 0.0)
-    if time.time() - last_ts < TELEGRAM_COMMENT_COOLDOWN_S:
-        logger.info(
-            "tg_comment: @%s cooldown active (last %.0fm ago) — skipping.",
-            uname, (time.time() - last_ts) / 60,
-        )
-        return
-
-    # Generate a short, on-brand comment via AI
-    prompt = (
-        "You are @Ledgexs — a professional crypto intelligence brand.\n"
-        f"The following crypto news was just posted in a Telegram channel:\n\n"
-        f"\"{news_context[:350]}\"\n\n"
-        "Write a SHORT, engaging Telegram comment (1-2 sentences MAX) that adds "
-        "a professional crypto market insight or relevant perspective. "
-        "Sound natural and informative. No hashtags. No @mentions. English only."
-    )
-    try:
-        ai = _make_ai_client()
-        if ai is None:
-            return
-        loop = asyncio.get_running_loop()
-        def _gen() -> str:
-            r = ai.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=80,
-            )
-            return (r.choices[0].message.content or "").strip()
-        comment_text = await loop.run_in_executor(None, _gen)
-    except Exception as exc:
-        logger.warning("tg_comment: AI generation for @%s failed: %s", uname, exc)
-        return
-
-    if not comment_text or len(comment_text) < 10:
-        return
-
-    # Post the comment on the channel post.
-    # Telethon's comment_to= finds the linked discussion group automatically.
-    try:
-        await tg_client.send_message(
-            entity=source_msg.peer_id,
-            message=comment_text,
-            comment_to=source_msg.id,
-        )
-        _telegram_comment_cooldown[uname] = time.time()
-        logger.info(
-            "tg_comment: commented on @%s msg %s — %r",
-            uname, source_msg.id, comment_text[:60],
-        )
-    except Exception as exc:
-        logger.warning(
-            "tg_comment: could not comment on @%s msg %s: %s",
-            uname, source_msg.id, exc,
-        )
-
-
-async def _periodic_twitter_comments() -> None:
-    """Background coroutine: every PERIODIC_COMMENT_INTERVAL_M minutes, post a
-    reply to the latest tweet of each account in TWITTER_PERIODIC_TARGETS.
-
-    This runs completely independently of any Telegram channel — no news post is
-    required to trigger it.  Each account is processed with a random 30-90 second
-    gap between replies to avoid burst-posting.
-    """
-    interval_s = PERIODIC_COMMENT_INTERVAL_M * 60
-    logger.info(
-        "periodic_twitter_comments: started — %d targets, interval=%dm",
-        len(TWITTER_PERIODIC_TARGETS), PERIODIC_COMMENT_INTERVAL_M,
-    )
-    # Initial delay so the bot fully starts before the first round
-    await asyncio.sleep(120)
-
-    while True:
-        if _twitter_v2 is None or _twitter_v1 is None:
-            await asyncio.sleep(interval_s)
-            continue
-
-        loop = asyncio.get_running_loop()
-        for tw_username in TWITTER_PERIODIC_TARGETS:
-            try:
-                await loop.run_in_executor(None, _sync_periodic_comment_one, tw_username)
-            except Exception as exc:
-                logger.warning("periodic comment: unhandled error for @%s: %s", tw_username, exc)
-            # Random gap between accounts to look natural
-            await asyncio.sleep(random.randint(30, 90))
-
-        logger.info("periodic_twitter_comments: round complete — sleeping %dm.", PERIODIC_COMMENT_INTERVAL_M)
-        await asyncio.sleep(interval_s)
-
-
 # ── Core news handler ─────────────────────────────────────────────────────────
 
 async def _handle_news(
@@ -1340,14 +867,6 @@ async def _handle_news(
         else:
             logger.info("news_aggregator: text-only news — Telegram only (Twitter skipped by design).")
 
-        await _twitter_auto_comment(source_username, rewritten)
-
-        # Telegram auto-comment: reply on the original source-channel post
-        # (only for channels listed in TELEGRAM_COMMENT_SOURCES that have the
-        # Telegram Comments / discussion feature enabled).
-        first_msg = messages[0] if messages else None
-        await _tg_auto_comment(source_username, first_msg, rewritten, tg_client)
-
     finally:
         _cleanup_media_dir()
 
@@ -1394,8 +913,15 @@ async def _run_news_client() -> None:
     _source_entity_ids: set[int] = set()
 
     async def _resolve_source_channels() -> None:
-        """Resolve every SOURCE_CHANNEL to its numeric entity ID."""
-        from telethon.tl.functions.channels import JoinChannelRequest  # type: ignore
+        """Resolve every SOURCE_CHANNEL to its numeric entity ID, joining if needed.
+
+        WHY auto-join: Telethon only delivers updates for channels the session
+        account has physically joined.  If the account is not a member of a
+        channel it will never receive messages from it regardless of filters.
+        We call JoinChannelRequest for each channel that wasn't already joined.
+        UserAlreadyParticipantError is silently ignored (already a member).
+        """
+        from telethon.tl.functions.channels import JoinChannelRequest   # type: ignore
         from telethon.errors import UserAlreadyParticipantError          # type: ignore
 
         for ch in SOURCE_CHANNELS:
@@ -1407,10 +933,21 @@ async def _run_news_client() -> None:
                     logger.info("news_aggregator: resolved %-40s → entity_id=%d", ch, abs(int(eid)))
                 else:
                     logger.warning("news_aggregator: could not get id for %s", ch)
+                    continue
+
+                # Auto-join so the session receives updates from this channel.
+                try:
+                    await client(JoinChannelRequest(entity))
+                    logger.info("news_aggregator: joined %s", ch)
+                except UserAlreadyParticipantError:
+                    pass   # already a member — no action needed
+                except Exception as join_exc:
+                    logger.warning("news_aggregator: could not join %s: %s", ch, join_exc)
+
             except Exception as exc:
                 logger.warning(
                     "news_aggregator: cannot resolve %s (%s) — "
-                    "make sure the Telegram account has joined this channel.",
+                    "will still attempt username-based matching.",
                     ch, exc,
                 )
 
@@ -1497,7 +1034,6 @@ async def _run_news_client() -> None:
         # Resolve channels AFTER connect so session cache is populated.
         await _resolve_source_channels()
         asyncio.create_task(_periodic_market_analysis(client))
-        asyncio.create_task(_periodic_twitter_comments())
         logger.info("news_aggregator: all systems running. Listening for news…")
         await client.run_until_disconnected()
     finally:

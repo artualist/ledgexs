@@ -127,12 +127,25 @@ AI_COMBINED_PROMPT = (
 )
 
 MARKET_INSIGHT_PROMPT = (
-    "You are a professional crypto analyst for @Ledgexs. Write an ultra-short market insight post.\n\n"
+    "You are a senior crypto analyst for @Ledgexs. Write a high-signal market insight post.\n\n"
+    "CRITICAL DATA RULE: You MUST use the EXACT numbers from DATA PROVIDED below. "
+    "Never invent or approximate prices, percentages, or volumes. "
+    "If you cannot cite a real number from the data, do NOT write the post — output SKIP instead.\n\n"
     "STRICT FORMAT RULES:\n"
-    "1. HEADLINE: One punchy line using <b>🚀 $SYMBOL SHORT_ACTION!</b> — use HTML <b> tags, NEVER ** asterisks.\n"
-    "2. BODY: EXACTLY 2 SHORT sentences max. One explains what is happening; one explains why it matters.\n"
-    "3. FORMATTING: HTML only (<b>, <i>). ZERO markdown (no **, no __, no #). No bullet points, no headers.\n"
-    "4. LANGUAGE: Professional English. Be concise — readers skim on mobile.\n\n"
+    "1. HEADLINE: <b>📊 $SYMBOL — KEY LEVEL / ACTION</b> — e.g. <b>📊 $BTC — Breakout at $107K</b>.\n"
+    "   Use HTML <b> tags. NEVER use ** asterisks. NEVER use '🚀 SHORT_ACTION' vague labels.\n"
+    "2. BODY (max 3 short sentences):\n"
+    "   • Sentence 1: Current price + 24h change % + volume (use EXACT figures from data).\n"
+    "   • Sentence 2: Key levels — 24h high/low as immediate support/resistance.\n"
+    "   • Sentence 3: One-line market read — is momentum bullish/bearish and why.\n"
+    "3. FORMATTING: HTML only (<b>, <i>). ZERO markdown. No bullet points, no headers.\n"
+    "4. CASHTAG RULE: Use the coin's cashtag ($SYMBOL) EXACTLY ONCE in the whole post — in the headline only.\n"
+    "5. LENGTH: Fit within 280 characters for Twitter. Be dense, not fluffy.\n\n"
+    "EXAMPLE OUTPUT (BTC at $107,200):\n"
+    "<b>📊 $BTC — Holding $107K Support</b>\n"
+    "BTC trades at <b>$107,200</b> (+2.4% / 24h) on $38B volume. "
+    "Key levels: $105,800 support, $109,500 resistance. "
+    "Momentum leans bullish — price reclaimed the 24h VWAP after morning dip.\n\n"
     "DATA PROVIDED:\n{data}"
 )
 
@@ -462,7 +475,7 @@ async def _get_trending_coins() -> list[str]:
         return ["BTC", "ETH", "SOL"]
 
 
-async def _get_market_data(coin: str) -> str:
+async def _get_market_data(coin: str) -> str | None:
     """Fetch price/volume/change for a coin via CoinGecko (replaces geo-blocked Binance API)."""
     def _fetch() -> str:
         cg_id = _CG_IDS.get(coin.upper(), coin.lower())
@@ -494,7 +507,7 @@ async def _get_market_data(coin: str) -> str:
         return await loop.run_in_executor(None, _fetch)
     except Exception as e:
         logger.warning(f"Market data fetch failed for {coin}: {e}")
-        return f"${coin}: current price data temporarily unavailable."
+        return None   # None = no data; caller must skip posting
 
 
 async def _periodic_market_analysis(tg_client: Any) -> None:
@@ -518,6 +531,15 @@ async def _periodic_market_analysis(tg_client: Any) -> None:
 
             coin        = trending_coins[0]    # top-1 trending coin only
             market_data = await _get_market_data(coin)
+
+            if market_data is None:
+                logger.warning(
+                    "periodic_market_analysis: market data unavailable for $%s "
+                    "— skipping this round (no post made).", coin
+                )
+                await asyncio.sleep(900)  # retry sooner: 15 min
+                continue
+
             logger.info("periodic_market_analysis: posting analysis for $%s", coin)
             prompt      = MARKET_INSIGHT_PROMPT.format(data=market_data)
             raw_text    = await _call_gpt_for_analysis(prompt)
@@ -525,12 +547,21 @@ async def _periodic_market_analysis(tg_client: Any) -> None:
             # Strip any stray ** markdown the AI may have produced
             analysis_text = _ASTERISK_RE.sub("", raw_text).strip()
 
+            # If AI says SKIP (no usable data), don't post
+            if analysis_text.strip().upper() == "SKIP":
+                logger.warning(
+                    "periodic_market_analysis: AI returned SKIP for $%s "
+                    "— not posting.", coin
+                )
+                await asyncio.sleep(900)
+                continue
+
             loop = asyncio.get_running_loop()
 
             # ── Telegram ─────────────────────────────────────────────────────
             await loop.run_in_executor(None, _post_to_telegram, analysis_text, [])
 
-            # ── X / Twitter (text-only — no media needed for market analysis)
+            # ── X / Twitter ───────────────────────────────────────────────────
             await loop.run_in_executor(None, _post_to_twitter, analysis_text, [])
 
             logger.info("periodic_market_analysis: done — sleeping 4 h.")

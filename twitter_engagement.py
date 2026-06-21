@@ -608,16 +608,16 @@ def _post_top_movers(today_str: str) -> None:
             name   = c.get("symbol", "?").upper()
             change = c.get("price_change_percentage_24h") or 0
             price  = c.get("current_price") or 0
-            lines.append(f"  ${name}: {change:+.1f}% @ ${price:,.4g}")
+            lines.append(f"  {name}: {change:+.1f}% @ ${price:,.4g}")
         return "\n".join(lines)
 
-    # Build compact per-coin label: $SYM +X.X%
+    # Build compact per-coin label: SYM +X.X%
     def _short_fmt(coins: list) -> str:
         parts = []
         for c in coins:
             sym    = c.get("symbol", "?").upper()
             change = c.get("price_change_percentage_24h") or 0
-            parts.append(f"${sym} {change:+.1f}%")
+            parts.append(f"{sym} {change:+.1f}%")
         return "  ".join(parts)
 
     gainers_str = _fmt(gainers, "📈")

@@ -39,7 +39,7 @@ SOURCE_CHANNELS: list[str] = [
     "@bitcoin_crypto_ethereum_news",
     "@binance_coinbase_okx_news",
     "@fintech_blockchain_defi_news",
-    # Other sources
+    # Core crypto news sources
     "@cointelegraph",
     "@bitcoinmagazinetelegram",
     "@fin_watch",
@@ -50,6 +50,15 @@ SOURCE_CHANNELS: list[str] = [
     "@coinmuhendisihaber",
     "@news_crypto",
     "@jrkripto",
+    "@lookonchainchannel",
+    "@coinbureau",        
+    "@bulltheory",       
+    "@cryptoquant_official",
+    
+    # ── RULE ─────────────────────────────────────────────────────────────────
+    # Only add channels here whose posts you WANT published to @Ledgexs.
+    # If you only want to auto-comment on a Twitter account WITHOUT picking up
+    # their Telegram posts, add them to TWITTER_PERIODIC_TARGETS below instead.
 ]
 
 # Normalised set for fast O(1) membership check (lowercase, no @)
@@ -63,14 +72,21 @@ TELEGRAM_SIG = (
     "━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | <a href='https://t.me/LedgexsWhale'>Whale Alert</a> | <a href='https://x.com/Ledgexs'>X</a> | <a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
-MIN_TEXT_LEN      = 15               # skip media-only / trivially short messages
-TWEET_MAX         = 25000
-TWITTER_MAX_MEDIA = 4                # Twitter hard limit
-TG_MAX_MEDIA      = 10               # Telegram sendMediaGroup hard limit
-DEDUP_CACHE_SIZE  = 60               # rolling window of recent summaries
-GROUP_COLLECT_S   = 1.2              # seconds to wait for all album frames to arrive
-MEDIA_DIR         = Path("/tmp/news_media")
-_WS_RE            = re.compile(r'\s+')
+MIN_TEXT_LEN       = 15               # skip media-only / trivially short messages
+TWEET_MAX          = 25000
+TWITTER_MAX_MEDIA  = 4               # Twitter hard limit
+TG_MAX_MEDIA       = 10              # Telegram sendMediaGroup hard limit
+DEDUP_CACHE_SIZE   = 60              # rolling window of recent summaries
+DEDUP_WINDOW_HOURS = 3               # only compare against stories from the last N hours
+GROUP_COLLECT_S    = 1.5             # seconds to wait for all album frames to arrive (was 1.2)
+MEDIA_DIR          = Path("/tmp/news_media")
+_WS_RE             = re.compile(r'\s+')
+
+# Pre-AI fingerprint dedup — catches near-exact duplicates without an API call.
+# Uses the first FINGERPRINT_WORDS meaningful words as a normalised signature.
+FINGERPRINT_WORDS = 25
+FINGERPRINT_SIM_THRESHOLD = 0.55    # Jaccard similarity above this → duplicate
+FINGERPRINT_WINDOW_S = 3 * 3600     # how long to keep fingerprints (3 hours)
 
 # ── AI prompts ────────────────────────────────────────────────────────────────
 
@@ -81,29 +97,42 @@ AI_COMBINED_PROMPT = (
     "CRITICAL LANGUAGE RULE: ALL output MUST be in English. If the input is in Turkish, Arabic, or any other language, "
     "you MUST translate it to fluent, professional English immediately. NEVER output non-English text.\n\n"
 
-    "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS reports the same event, geopolitical incident, or market movement as any of the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE. "
-    "BE STRICT: If the core event is the same (e.g., Strait of Hormuz closure), it is a duplicate, even if the wording or source is different.\n\n"
+    "CRITICAL RULE 1 (DEDUPLICATION):\n"
+    "Output ONLY the word DUPLICATE if the INCOMING NEWS describes the EXACT SAME specific event as one of the RECENTLY PUBLISHED STORIES.\n"
+    "A duplicate requires ALL THREE of the following to match:\n"
+    "  a) Same specific subject/entity (same person, same company, same token)\n"
+    "  b) Same specific action or decision (same verb/event)\n"
+    "  c) Similar timing (within the same news cycle)\n\n"
+    "EXAMPLES OF DUPLICATES (output DUPLICATE):\n"
+    "  - Recent: 'Saylor hints at buying BTC'  |  Incoming: 'MicroStrategy may purchase more Bitcoin'\n"
+    "  - Recent: 'SEC approves Bitcoin ETF'     |  Incoming: 'Bitcoin ETF gets SEC greenlight'\n\n"
+    "EXAMPLES OF NOT DUPLICATES (DO NOT output DUPLICATE — rewrite them):\n"
+    "  - Recent: 'Saylor hints at buying BTC'  |  Incoming: 'BlackRock buys $500M BTC' (different actor)\n"
+    "  - Recent: 'BTC hits $100k'              |  Incoming: 'ETH breaks $4,000' (different asset)\n"
+    "  - Recent: 'Saylor hints at buying BTC'  |  Incoming: 'MicroStrategy confirms purchase of 10,000 BTC' (same actor but NEW specific detail: confirmed amount)\n"
+    "  - Recent: 'Fed raises rates'            |  Incoming: 'Bitcoin drops 5% after rate decision' (market reaction, different event)\n"
+    "BE CAREFUL: Different sources reporting DIFFERENT ANGLES or FOLLOW-UP DETAILS of the same general topic are NOT duplicates.\n\n"
+
     "CRITICAL RULE 2 (SPAM FILTER): Output ONLY the word SKIP if the message contains NO actual news or factual information whatsoever — "
     "for example a pure giveaway announcement, a pure 'subscribe to our channel' call-to-action with no news, or a pure paid advertisement. "
-    "DO NOT skip a message for any of the following reasons — these are all normal and expected in crypto news feeds:\n"
+    "DO NOT skip a message for any of the following reasons:\n"
     "  • The message starts or ends with the channel's own name or Telegram/Twitter handle.\n"
     "  • The message contains URLs or links (they will be removed in the rewrite step).\n"
     "  • The message mentions any company, project, token, protocol, exchange, government body, or public figure by name.\n"
     "  • The message is written in Turkish, Arabic, or another language (translate it instead).\n"
     "RULE: If there is at least ONE factual claim — a price, an event, a decision, a statement by a person or organisation — it is news. Rewrite it.\n\n"
 
-    "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
-    "1. FORMATTING & TAGGING (DECISION LOGIC):\n"
-    "   - You MUST analyze the news content and pick ONE of these tags to start your post:\n"
-    "     a) <b>🚨 JUST IN:</b> (Use for new, timely developments and unexpected announcements.)\n"
-    "     b) <b>⚡ BREAKING:</b> (Use for major, high-impact events that shift market sentiment.)\n"
-    "     c) <b>📊 MARKET ALERT:</b> (Use for price action, technical indicators, or on-chain data alerts.)\n"
-    "2. LENGTH: MAXIMUM 1-2 SENTENCES in English.\n"
-    "3. AI INSIGHT (MAXIMUM 1-2 SENTENCES): Provide a short, professional analysis on how this impacts the market or the asset. DO NOT use any headers, labels, or titles for this section. Simply provide the analysis as a direct follow-up paragraph.\n"
+    "STEP 3 — THE REWRITE (only if not DUPLICATE and not SKIP):\n"
+    "1. FORMATTING: Start with exactly one of these HTML tags:\n"
+    "     a) <b>🚨 JUST IN:</b> — for new, timely developments and unexpected announcements\n"
+    "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
+    "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
+    "2. LENGTH: MAXIMUM 1-2 sentences summarising the news.\n"
+    "3. AI INSIGHT: 1-2 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
-    "5. CLEANING: Remove ALL URLs and redundant source citations.\n"
+    "5. CLEANING: Remove ALL URLs and source citations.\n\n"
 
-    "RECENTLY PUBLISHED STORIES:\n{recent_stories}\n\n"
+    "RECENTLY PUBLISHED STORIES (last {window_hours} hours only — compare against these):\n{recent_stories}\n\n"
     "INCOMING NEWS:\n{incoming_news}"
 )
 
@@ -199,10 +228,54 @@ _twitter_v2: Any
 _twitter_v1: Any
 _twitter_v2, _twitter_v1 = _build_twitter_clients()
 
-# ── Deduplication cache ───────────────────────────────────────────────────────
 
-_dedup_cache: deque[str] = deque(maxlen=DEDUP_CACHE_SIZE)
+def _verify_twitter_credentials() -> None:
+    """Check at startup that all four Twitter secrets are present and accepted.
+
+    Uses the cheapest possible v1.1 call (verify_credentials) so we surface
+    bad keys immediately in the log instead of silently failing on every post.
+    Failures are non-fatal — Twitter posting is just disabled.
+    """
+    if _twitter_v1 is None:
+        missing = [k for k in (
+            "TWITTER_API_KEY", "TWITTER_API_SECRET",
+            "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_SECRET",
+        ) if not os.environ.get(k)]
+        if missing:
+            logger.warning(
+                "news_aggregator: Twitter disabled — missing secrets: %s",
+                ", ".join(missing),
+            )
+        else:
+            logger.warning("news_aggregator: Twitter disabled — tweepy unavailable.")
+        return
+    try:
+        me = _twitter_v1.verify_credentials()
+        logger.info(
+            "news_aggregator: Twitter credentials OK — authenticated as @%s.",
+            getattr(me, "screen_name", "?"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "news_aggregator: Twitter credentials INVALID (%s) — "
+            "check TWITTER_API_KEY / TWITTER_API_SECRET / TWITTER_ACCESS_TOKEN / TWITTER_ACCESS_SECRET.",
+            exc,
+        )
+
+
+_verify_twitter_credentials()
+
+# ── Deduplication cache ───────────────────────────────────────────────────────
+# Each entry is (unix_timestamp, summary_text) so we can discard entries
+# older than DEDUP_WINDOW_HOURS when building the AI prompt context.
+
+_dedup_cache: deque[tuple[float, str]] = deque(maxlen=DEDUP_CACHE_SIZE)
 _dedup_lock  = threading.Lock()
+
+# Pre-AI fingerprint cache: (unix_timestamp, frozenset_of_words).
+# Catches near-exact duplicates (Jaccard ≥ FINGERPRINT_SIM_THRESHOLD)
+# without spending an API call.
+_fingerprint_cache: deque[tuple[float, frozenset]] = deque(maxlen=200)
 
 # Serialises AI dedup calls so concurrent messages never race past an empty cache.
 # Must be acquired BEFORE the AI call and released AFTER _cache_add() so the
@@ -217,9 +290,45 @@ def _get_dedup_lock() -> asyncio.Lock:
     return _dedup_processing_lock
 
 
-def _cache_add(summary: str) -> None:
+def _make_fingerprint(text: str) -> frozenset:
+    """Normalise text and return a frozenset of its first FINGERPRINT_WORDS words.
+
+    Used for fast Jaccard-based pre-dedup before the AI call.
+    Words shorter than 3 chars (stopwords, articles) are excluded.
+    """
+    words = re.sub(r"[^a-z0-9\s]", "", text.lower()).split()
+    meaningful = [w for w in words if len(w) >= 3][:FINGERPRINT_WORDS]
+    return frozenset(meaningful)
+
+
+def _is_fingerprint_duplicate(fp: frozenset) -> bool:
+    """Return True if fp is too similar to any recently cached fingerprint."""
+    if not fp:
+        return False
+    now = time.time()
     with _dedup_lock:
-        _dedup_cache.append(summary[:500])
+        for ts, cached_fp in _fingerprint_cache:
+            if now - ts > FINGERPRINT_WINDOW_S:
+                continue
+            if not cached_fp:
+                continue
+            intersection = len(fp & cached_fp)
+            union = len(fp | cached_fp)
+            if union > 0 and intersection / union >= FINGERPRINT_SIM_THRESHOLD:
+                return True
+    return False
+
+
+def _cache_add(summary: str, raw_fingerprint: frozenset | None = None) -> None:
+    """Add a summary to the dedup cache with the current timestamp.
+
+    Also adds the raw fingerprint to the fingerprint cache if provided.
+    """
+    now = time.time()
+    with _dedup_lock:
+        _dedup_cache.append((now, summary[:500]))
+        if raw_fingerprint:
+            _fingerprint_cache.append((now, raw_fingerprint))
 
 
 # ── AI helpers (sync — always call via run_in_executor from async context) ────
@@ -232,14 +341,20 @@ def _ai_dedup_and_rewrite(raw_text: str) -> str | None:
         if _ai_client is None:
             raise RuntimeError("AI client unavailable")
 
+    cutoff = time.time() - DEDUP_WINDOW_HOURS * 3600
     with _dedup_lock:
-        cache_snapshot = list(_dedup_cache)
-        recent_stories = (
-            "\n---\n".join(f"{i+1}. {s}" for i, s in enumerate(cache_snapshot))
-            if cache_snapshot else "No recent stories."
-        )
+        # Only include stories published within the dedup window (last 3 hours).
+        # Comparing against 10-hour-old cache entries causes false positives when
+        # a related but genuinely new story arrives later in the day.
+        recent = [(ts, s) for ts, s in _dedup_cache if ts >= cutoff]
+
+    recent_stories = (
+        "\n---\n".join(f"{i+1}. {s}" for i, (ts, s) in enumerate(recent))
+        if recent else "No recent stories."
+    )
 
     formatted_prompt = AI_COMBINED_PROMPT.format(
+        window_hours=DEDUP_WINDOW_HOURS,
         recent_stories=recent_stories,
         incoming_news=raw_text,
     )
@@ -654,19 +769,31 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 
 # ── Twitter Auto Comment Helper ───────────────────────────────────────────────
 
-# Telegram kanal username'i (key) → karşılık gelen Twitter/X @username (value).
-# Artık numeric ID saklamıyoruz; ID'ler runtime'da get_user() ile çekilir ve
-# tekrar kullanım için bellekte önbelleğe alınır.
+# ── Twitter auto-comment — SOURCE-TRIGGERED ───────────────────────────────────
+# These accounts are auto-commented WHEN we publish a news item FROM their
+# Telegram channel.  Every key here MUST also appear in SOURCE_CHANNELS.
+# If the Telegram channel is absent from SOURCE_CHANNELS, we never receive
+# its messages and this mapping is never reached.
 TWITTER_TARGET_MAPPING: dict[str, str] = {
+    # Telegram username (no @, lowercase)  →  Twitter @username
     "cointelegraph":           "Cointelegraph",
     "watcherguru":             "WatcherGuru",
     "bitcoinmagazinetelegram": "BitcoinMagazine",
-    "coinbureau":              "CoinBureau",
-    "lookonchainchannel":      "lookonchain",
-    "bulltheory":              "bulltheoryio",
-    "cryptoquant_official":    "cryptoquant_com",
     "ninjanewstr":             "ninjanewsx",
 }
+
+# ── Twitter auto-comment — PERIODIC / INDEPENDENT ─────────────────────────────
+# These Twitter accounts get an @Ledgexs reply every PERIODIC_COMMENT_INTERVAL_M
+# minutes, based on their most recent tweet — completely independent of any
+# Telegram source channel.  Add accounts here when you want to comment on their
+# Twitter activity WITHOUT republishing their Telegram posts.
+TWITTER_PERIODIC_TARGETS: list[str] = [
+    "lookonchain",        # @lookonchain
+    "CoinBureau",         # @CoinBureau
+    "bulltheoryio",       # @bulltheoryio
+    "cryptoquant_com",    # @cryptoquant_com
+]
+PERIODIC_COMMENT_INTERVAL_M = 45   # minutes between periodic comment rounds
 
 # Runtime username → numeric ID cache (avoids a lookup API call on every news item)
 _twitter_id_cache: dict[str, str] = {}
@@ -747,33 +874,53 @@ def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: 
         )
         return
 
-    # ── Step 3: post as a QUOTE TWEET (not a reply) ──────────────────────────
-    # WHY: Twitter API v2 returns 403 "you have not been mentioned or otherwise
-    # engaged" when using in_reply_to_tweet_id, even when the tweet's
-    # reply_settings field says "everyone".  This is an API-tier enforcement
-    # that is separate from the UI reply_settings — it requires prior engagement
-    # from the original author, which third-party bots almost never have.
-    # quote_tweet_id bypasses this restriction entirely: quote tweets are
-    # first-class tweets on our own timeline and can always be created regardless
-    # of whose tweet we quote.
-    try:
-        _twitter_v2.create_tweet(
-            text=reply_text,
-            quote_tweet_id=str(target_tweet.id),
-            user_auth=True,
-        )
-        logger.info(
-            "news_aggregator: Quote-tweeted @%s tweet (id=%s) — Success!",
-            tw_username, target_tweet.id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "news_aggregator: Quote-tweet of @%s tweet %s failed: %s",
-            tw_username, target_tweet.id, exc,
-        )
+    # ── Step 3: post the reply via v1.1 API ──────────────────────────────────
+    # WHY v1.1 and not v2:
+    # Twitter API v2 create_tweet with in_reply_to_tweet_id returns 403
+    # "you have not been mentioned or otherwise engaged" for accounts that
+    # have never previously interacted with our bot — regardless of the
+    # target tweet's reply_settings field.  This is a v2-specific enforcement.
+    # The v1.1 update_status endpoint does NOT have this restriction and allows
+    # replying to any public tweet.  We keep the v2 client for reading
+    # (get_user, get_users_tweets) and fall back to create_tweet if v1.1 is absent.
+    plain_reply = _strip_html(reply_text).strip()
+    if _twitter_v1 is not None:
+        try:
+            _twitter_v1.update_status(
+                status=plain_reply,
+                in_reply_to_status_id=str(target_tweet.id),
+                auto_populate_reply_metadata=True,
+            )
+            logger.info(
+                "news_aggregator: Replied (v1.1) to @%s tweet (id=%s) — Success!",
+                tw_username, target_tweet.id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "news_aggregator: v1.1 reply to @%s tweet %s failed: %s",
+                tw_username, target_tweet.id, exc,
+            )
+    else:
+        # v1.1 not available — fall back to v2 (may hit 403 on some accounts)
+        try:
+            _twitter_v2.create_tweet(
+                text=plain_reply,
+                in_reply_to_tweet_id=str(target_tweet.id),
+                user_auth=True,
+            )
+            logger.info(
+                "news_aggregator: Replied (v2 fallback) to @%s tweet (id=%s) — Success!",
+                tw_username, target_tweet.id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "news_aggregator: v2 reply to @%s tweet %s failed: %s",
+                tw_username, target_tweet.id, exc,
+            )
 
 
 async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
+    """Fire an auto-comment triggered by a news post from a SOURCE_CHANNELS channel."""
     if _twitter_v2 is None or tg_username.lower() not in TWITTER_TARGET_MAPPING:
         return
 
@@ -803,6 +950,138 @@ async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:
         logger.warning(f"Twitter auto-comment failed: {e}")
 
 
+def _sync_periodic_comment_one(tw_username: str) -> None:
+    """Synchronous: fetch the latest open-reply tweet from tw_username and reply.
+
+    Used by the periodic comment loop for accounts NOT in SOURCE_CHANNELS.
+    Shares the same v1.1 reply path as _sync_twitter_auto_comment.
+    """
+    if _twitter_v2 is None or _twitter_v1 is None:
+        return
+
+    # Resolve username → numeric ID (reuse the same cache as source-triggered comments)
+    if tw_username not in _twitter_id_cache:
+        try:
+            user_resp = _twitter_v2.get_user(username=tw_username, user_auth=True)
+            if user_resp.data is None:
+                logger.warning("periodic comment: @%s not found on Twitter.", tw_username)
+                return
+            _twitter_id_cache[tw_username] = str(user_resp.data.id)
+        except Exception as exc:
+            logger.warning("periodic comment: could not resolve @%s: %s", tw_username, exc)
+            return
+
+    twitter_id = _twitter_id_cache[tw_username]
+
+    # Fetch recent tweets
+    try:
+        tweets = _twitter_v2.get_users_tweets(
+            id=twitter_id,
+            max_results=10,
+            tweet_fields=["conversation_id", "in_reply_to_user_id", "reply_settings", "text"],
+            user_auth=True,
+        )
+    except Exception as exc:
+        logger.warning("periodic comment: get_users_tweets for @%s failed: %s", tw_username, exc)
+        return
+
+    if not tweets.data:
+        logger.info("periodic comment: no tweets found for @%s.", tw_username)
+        return
+
+    # Find the most recent root tweet with open replies
+    target_tweet = None
+    tweet_text   = ""
+    for tweet in tweets.data:
+        raw = tweet.data if hasattr(tweet, "data") else {}
+        if raw.get("in_reply_to_user_id") is not None:
+            continue
+        settings = (raw.get("reply_settings") or "everyone").lower()
+        if settings in ("everyone", ""):
+            target_tweet = tweet
+            tweet_text   = raw.get("text", "")
+            break
+
+    if target_tweet is None:
+        logger.info("periodic comment: no open-reply tweet for @%s.", tw_username)
+        return
+
+    # Generate AI reply text based on the tweet content
+    prompt = (
+        f"You are @Ledgexs — a professional crypto intelligence account.\n"
+        f"The following tweet was just posted by @{tw_username}:\n\n"
+        f"\"{tweet_text[:400]}\"\n\n"
+        "Write a SHORT reply (1-2 sentences MAX) that adds a professional crypto market insight "
+        "relevant to what they said. Sound natural, not like an ad. "
+        "No hashtags. No emojis. No @mentions. @Ledgexs brand voice only."
+    )
+    try:
+        ai = _make_ai_client()
+        if ai is None:
+            return
+        resp = ai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=80,
+        )
+        reply_text = (resp.choices[0].message.content or "").strip()
+    except Exception as exc:
+        logger.warning("periodic comment: AI generation for @%s failed: %s", tw_username, exc)
+        return
+
+    if not reply_text or len(reply_text) < 10:
+        return
+
+    # Post reply via v1.1 (avoids v2 engagement-required 403)
+    try:
+        _twitter_v1.update_status(
+            status=reply_text,
+            in_reply_to_status_id=str(target_tweet.id),
+            auto_populate_reply_metadata=True,
+        )
+        logger.info(
+            "periodic comment: replied to @%s tweet %s — %r",
+            tw_username, target_tweet.id, reply_text[:60],
+        )
+    except Exception as exc:
+        logger.warning("periodic comment: reply to @%s failed: %s", tw_username, exc)
+
+
+async def _periodic_twitter_comments() -> None:
+    """Background coroutine: every PERIODIC_COMMENT_INTERVAL_M minutes, post a
+    reply to the latest tweet of each account in TWITTER_PERIODIC_TARGETS.
+
+    This runs completely independently of any Telegram channel — no news post is
+    required to trigger it.  Each account is processed with a random 30-90 second
+    gap between replies to avoid burst-posting.
+    """
+    interval_s = PERIODIC_COMMENT_INTERVAL_M * 60
+    logger.info(
+        "periodic_twitter_comments: started — %d targets, interval=%dm",
+        len(TWITTER_PERIODIC_TARGETS), PERIODIC_COMMENT_INTERVAL_M,
+    )
+    # Initial delay so the bot fully starts before the first round
+    await asyncio.sleep(120)
+
+    while True:
+        if _twitter_v2 is None or _twitter_v1 is None:
+            await asyncio.sleep(interval_s)
+            continue
+
+        loop = asyncio.get_running_loop()
+        for tw_username in TWITTER_PERIODIC_TARGETS:
+            try:
+                await loop.run_in_executor(None, _sync_periodic_comment_one, tw_username)
+            except Exception as exc:
+                logger.warning("periodic comment: unhandled error for @%s: %s", tw_username, exc)
+            # Random gap between accounts to look natural
+            await asyncio.sleep(random.randint(30, 90))
+
+        logger.info("periodic_twitter_comments: round complete — sleeping %dm.", PERIODIC_COMMENT_INTERVAL_M)
+        await asyncio.sleep(interval_s)
+
+
 # ── Core news handler ─────────────────────────────────────────────────────────
 
 async def _handle_news(
@@ -818,6 +1097,20 @@ async def _handle_news(
 
     loop = asyncio.get_running_loop()
 
+    # --- PRE-DEDUP: fast Jaccard fingerprint check (no AI cost) ---
+    # Build a normalised word-set from the raw text and compare it against
+    # recently cached fingerprints.  If the similarity is above the threshold,
+    # we know the message is near-identical to something we already processed
+    # within the last FINGERPRINT_WINDOW_S seconds — skip immediately.
+    # This is the FIRST line of defence; AI dedup is the second.
+    raw_fp = _make_fingerprint(raw_text)
+    if _is_fingerprint_duplicate(raw_fp):
+        logger.info(
+            "news_aggregator: fingerprint duplicate from @%s — skipped before AI.",
+            source_username,
+        )
+        return
+
     # 1. AI Rewrite ve Duplicate Kontrolü — SERIALIZED via _dedup_processing_lock.
     #
     # WHY: _handle_news runs concurrently for every incoming message.  Without a
@@ -832,6 +1125,15 @@ async def _handle_news(
     # holding it during slow HTTP calls.
     rewritten: str | None = None
     async with _get_dedup_lock():
+        # Re-check fingerprint inside the lock as well — another coroutine may have
+        # processed the same story while we were waiting to acquire the lock.
+        if _is_fingerprint_duplicate(raw_fp):
+            logger.info(
+                "news_aggregator: fingerprint duplicate (post-lock) from @%s — skipped.",
+                source_username,
+            )
+            return
+
         try:
             rewritten = await loop.run_in_executor(None, _ai_dedup_and_rewrite, raw_text)
             if rewritten is None:  # Duplicate or SKIP detected by AI
@@ -850,7 +1152,9 @@ async def _handle_news(
 
         # Add to cache NOW — while still holding the lock — so the next
         # concurrent message always sees this result before it calls the AI.
-        _cache_add(_strip_html(rewritten))
+        # Also store the raw fingerprint so future near-exact messages are caught
+        # by the fast fingerprint check without an API call.
+        _cache_add(_strip_html(rewritten), raw_fingerprint=raw_fp)
 
     # 3. Medyayı indir (lock dışında — yavaş I/O, dedup'u etkilemez)
     media_paths: list[str] = []
@@ -872,10 +1176,12 @@ async def _handle_news(
         # Blocking HTTP calls offloaded to thread pool so event loop stays free
         await loop.run_in_executor(None, _post_to_telegram, clean_tg_text, media_paths)
 
+        # Twitter: only post when there is at least one media file.
+        # Text-only posts are intentionally NOT sent to Twitter.
         if media_paths:
             await loop.run_in_executor(None, _post_to_twitter, rewritten, media_paths)
         else:
-            logger.info("news_aggregator: Text-only news sent to Telegram.")
+            logger.info("news_aggregator: text-only news — Telegram only (Twitter skipped by design).")
 
         await _twitter_auto_comment(source_username, rewritten)
 
@@ -901,6 +1207,55 @@ async def _run_news_client() -> None:
     pending_groups: dict[int, list[Any]]     = {}
     pending_tasks:  dict[int, asyncio.Task]  = {}
 
+    # ── Channel resolution ────────────────────────────────────────────────────
+    # Resolve all SOURCE_CHANNELS to their numeric Telegram entity IDs at startup.
+    # This is the DEFINITIVE fix for @coingraphnews and similar channels that are
+    # silently missed when we rely on chat.username alone:
+    #
+    # Problem 1: chat.username is None for channels/megagroups that have no public
+    #   username (some CoingraphNews sub-accounts fall into this category).
+    # Problem 2: Telethon returns None for chat.username when the entity has not
+    #   been previously cached by the session — even for channels that DO have a
+    #   username.
+    # Problem 3: If the Telegram account behind the session has NOT joined a channel
+    #   it will receive zero updates from it, regardless of any filter. We therefore
+    #   attempt to join each unresolved channel and log clearly if that fails.
+    #
+    # The resolved numeric IDs are stored in `_source_entity_ids`.
+    # The event handler accepts a message if:
+    #   abs(event.chat_id) in _source_entity_ids        ← primary (always works)
+    #   OR chat.username.lower() in _SOURCE_USERNAMES   ← fallback for new channels
+    #
+    # Both username AND id are accepted so that newly added channels work before
+    # the bot is restarted.
+    _source_entity_ids: set[int] = set()
+
+    async def _resolve_source_channels() -> None:
+        """Resolve every SOURCE_CHANNEL to its numeric entity ID."""
+        from telethon.tl.functions.channels import JoinChannelRequest  # type: ignore
+        from telethon.errors import UserAlreadyParticipantError          # type: ignore
+
+        for ch in SOURCE_CHANNELS:
+            try:
+                entity = await client.get_entity(ch)
+                eid = getattr(entity, "id", None)
+                if eid is not None:
+                    _source_entity_ids.add(abs(int(eid)))
+                    logger.info("news_aggregator: resolved %-40s → entity_id=%d", ch, abs(int(eid)))
+                else:
+                    logger.warning("news_aggregator: could not get id for %s", ch)
+            except Exception as exc:
+                logger.warning(
+                    "news_aggregator: cannot resolve %s (%s) — "
+                    "make sure the Telegram account has joined this channel.",
+                    ch, exc,
+                )
+
+        logger.info(
+            "news_aggregator: %d/%d source channels resolved by entity ID.",
+            len(_source_entity_ids), len(SOURCE_CHANNELS),
+        )
+
     async def _process_group(grouped_id: int, username: str) -> None:
         await asyncio.sleep(GROUP_COLLECT_S)
         msgs = pending_groups.pop(grouped_id, [])
@@ -913,21 +1268,45 @@ async def _run_news_client() -> None:
         except Exception as exc:
             logger.warning("news_aggregator: group handler error: %s", exc)
 
-    # FIX: Do NOT pass chats=SOURCE_CHANNELS to the decorator.
-    # Telethon resolves those usernames at registration time. If any channel
-    # (e.g. @watcherguru, @coingraphnews) fails to resolve — because the
-    # session hasn't seen it before or a transient network error occurs —
-    # that channel is silently dropped and its events never fire.
-    # Instead we listen to ALL new messages and filter manually below.
+    # Listen to ALL new messages — do NOT pass chats= to the decorator.
+    # Telethon resolves the chats= list at registration time; if any channel
+    # fails to resolve (network hiccup, not yet in session cache) it is silently
+    # dropped and its events NEVER fire.  Manual filtering below is safer.
     @client.on(events.NewMessage())
     async def _on_new_message(event: events.NewMessage.Event) -> None:
         try:
-            chat     = await event.get_chat()
-            username = (getattr(chat, 'username', None) or "").lower()
+            # ── Primary filter: numeric entity ID ────────────────────────────
+            # abs() because Telethon returns negative chat_ids for channels.
+            event_chat_id = abs(event.chat_id or 0)
 
-            # Manual filter: only process messages from our source channels
-            if username not in _SOURCE_USERNAMES:
-                return
+            # ── DIAGNOSTIC: log every channel message so we can see exactly
+            # which usernames/IDs Telethon sees.  This is essential for
+            # debugging channels like @news_crypto whose username may differ
+            # from what is listed in SOURCE_CHANNELS.
+            # Log at INFO level so it always appears in Railway logs without
+            # needing to change the log level.  Each line shows:
+            #   chat_id  resolved_username  in_source_ids?  in_source_usernames?
+            # If a channel you expect to see never appears here, the Telegram
+            # account behind the session has NOT joined that channel.
+            try:
+                _diag_chat = await event.get_chat()
+                _diag_uname = (getattr(_diag_chat, "username", None) or "").lower()
+            except Exception:
+                _diag_uname = ""
+            _in_ids   = event_chat_id in _source_entity_ids
+            _in_names = _diag_uname in _SOURCE_USERNAMES
+            if _in_ids or _in_names or _diag_uname:  # skip pure DM/group noise
+                logger.info(
+                    "TG-IN  id=%-14d  username=%-35s  id_match=%s  name_match=%s",
+                    event_chat_id, _diag_uname or "(none)", _in_ids, _in_names,
+                )
+
+            # ── Filter: accept if ID or username matches a source channel ─────
+            # _diag_uname is already fetched above (diagnostic block).
+            username: str = _diag_uname or f"id:{event_chat_id}"
+            if event_chat_id not in _source_entity_ids:
+                if _diag_uname not in _SOURCE_USERNAMES:
+                    return  # not one of our sources — discard
 
             msg        = event.message
             raw        = (msg.text or "").strip()
@@ -950,9 +1329,13 @@ async def _run_news_client() -> None:
             logger.warning("news_aggregator: event handler error: %s", exc)
 
     try:
-        asyncio.create_task(_periodic_market_analysis(client))
         await client.start()
-        logger.info("news_aggregator: Telethon UserBot connected.")
+        logger.info("news_aggregator: Telethon UserBot connected — resolving source channels…")
+        # Resolve channels AFTER connect so session cache is populated.
+        await _resolve_source_channels()
+        asyncio.create_task(_periodic_market_analysis(client))
+        asyncio.create_task(_periodic_twitter_comments())
+        logger.info("news_aggregator: all systems running. Listening for news…")
         await client.run_until_disconnected()
     finally:
         for task in pending_tasks.values():

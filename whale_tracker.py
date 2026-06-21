@@ -79,7 +79,7 @@ WHALE_SIG = (
 NEWS_SIG = (
     "\n\n━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | "
-    "<a href='https://t.me/LedgexsWhale'>Whale Alerts</a> | "
+    "<a href='https://t.me/LedgexsWhale'>Whale Alert</a> | "
     "<a href='https://x.com/Ledgexs'>X</a> | "
     "<a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )

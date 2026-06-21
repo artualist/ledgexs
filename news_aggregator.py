@@ -34,7 +34,12 @@ logger = logging.getLogger("whale_bot.news")
 # ── Config ────────────────────────────────────────────────────────────────────
 
 SOURCE_CHANNELS: list[str] = [
+    # CoingraphNews operates multiple channel accounts — all four must be listed
     "@coingraphnews",
+    "@bitcoin_crypto_ethereum_news",
+    "@binance_coinbase_okx_news",
+    "@fintech_blockchain_defi_news",
+    # Other sources
     "@cointelegraph",
     "@bitcoinmagazinetelegram",
     "@fin_watch",
@@ -72,10 +77,10 @@ _WS_RE            = re.compile(r'\s+')
 AI_COMBINED_PROMPT = (
     "You are the senior crypto-intelligence editor for @Ledgexs. "
     "Your objective is to provide elite-level, high-signal information in STRICT GLOBAL ENGLISH.\n\n"
-    
+
     "CRITICAL LANGUAGE RULE: ALL output MUST be in English. If the input is in Turkish, Arabic, or any other language, "
     "you MUST translate it to fluent, professional English immediately. NEVER output non-English text.\n\n"
-    
+
     "CRITICAL RULE 1 (DEDUPLICATION): If the INCOMING NEWS reports the same event, geopolitical incident, or market movement as any of the RECENTLY PUBLISHED STORIES, output ONLY: DUPLICATE. "
     "BE STRICT: If the core event is the same (e.g., Strait of Hormuz closure), it is a duplicate, even if the wording or source is different.\n\n"
     "CRITICAL RULE 2 (SPAM FILTER): Output ONLY the word SKIP if the message contains NO actual news or factual information whatsoever — "
@@ -86,7 +91,7 @@ AI_COMBINED_PROMPT = (
     "  • The message mentions any company, project, token, protocol, exchange, government body, or public figure by name.\n"
     "  • The message is written in Turkish, Arabic, or another language (translate it instead).\n"
     "RULE: If there is at least ONE factual claim — a price, an event, a decision, a statement by a person or organisation — it is news. Rewrite it.\n\n"
-    
+
     "STEP 3 — THE REWRITE (STRICT FORMATTING):\n"
     "1. FORMATTING & TAGGING (DECISION LOGIC):\n"
     "   - You MUST analyze the news content and pick ONE of these tags to start your post:\n"
@@ -97,7 +102,7 @@ AI_COMBINED_PROMPT = (
     "3. AI INSIGHT (MAXIMUM 1-2 SENTENCES): Provide a short, professional analysis on how this impacts the market or the asset. DO NOT use any headers, labels, or titles for this section. Simply provide the analysis as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and redundant source citations.\n"
-    
+
     "RECENTLY PUBLISHED STORIES:\n{recent_stories}\n\n"
     "INCOMING NEWS:\n{incoming_news}"
 )
@@ -688,11 +693,13 @@ def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: 
 
     twitter_id = _twitter_id_cache[tw_username]
 
-    # ── Step 2: fetch recent tweets and pick the latest root (standalone) one ──
+    # ── Step 2: fetch recent tweets with reply_settings so we can filter ────────
+    # reply_settings values: "everyone" | "mentioned_users" | "subscribers"
+    # We MUST fetch this field; without it we attempt blind replies that hit 403.
     tweets = _twitter_v2.get_users_tweets(
         id=twitter_id,
-        max_results=10,
-        tweet_fields=["conversation_id", "in_reply_to_user_id"],
+        max_results=20,
+        tweet_fields=["conversation_id", "in_reply_to_user_id", "reply_settings"],
         user_auth=True,
     )
 
@@ -700,29 +707,51 @@ def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: 
         logger.info("news_aggregator: no tweets found for @%s — skipping auto-comment.", tw_username)
         return
 
+    # Pick the most recent root tweet (not itself a reply) where anyone can reply.
+    # IMPORTANT: Tweepy stores tweet_fields extras in tweet.data (dict), NOT as
+    # direct attributes — getattr(tweet, "reply_settings") always returns None.
+    # We must use tweet.data.get() for the correct value.
+    # Twitter API returns "everyone" | "mentionedUsers" | "subscribers" (camelCase).
     target_tweet = None
     for tweet in tweets.data:
-        if getattr(tweet, "in_reply_to_user_id", None) is None:
+        raw = tweet.data if hasattr(tweet, "data") else {}
+        if raw.get("in_reply_to_user_id") is not None:
+            continue  # skip threads / replies
+        settings = (raw.get("reply_settings") or "everyone").lower()
+        # Normalise: "mentionedusers" / "mentioned_users" both map to restricted
+        is_open  = settings in ("everyone", "")
+        logger.debug(
+            "news_aggregator: @%s tweet %s reply_settings=%r open=%s",
+            tw_username, tweet.id, settings, is_open,
+        )
+        if is_open:
             target_tweet = tweet
             break
 
     if target_tweet is None:
         logger.info(
-            "news_aggregator: all recent tweets from @%s are replies — skipping auto-comment.",
+            "news_aggregator: no open-reply tweet found for @%s (all restricted or replies) — skipped.",
             tw_username,
         )
         return
 
     # ── Step 3: post the reply ────────────────────────────────────────────────
-    _twitter_v2.create_tweet(
-        text=reply_text,
-        in_reply_to_tweet_id=str(target_tweet.id),
-        user_auth=True,
-    )
-    logger.info(
-        "news_aggregator: Auto-commented on @%s tweet (id=%s) — Success!",
-        tw_username, target_tweet.id,
-    )
+    try:
+        _twitter_v2.create_tweet(
+            text=reply_text,
+            in_reply_to_tweet_id=str(target_tweet.id),
+            user_auth=True,
+        )
+        logger.info(
+            "news_aggregator: Auto-commented on @%s tweet (id=%s) — Success!",
+            tw_username, target_tweet.id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "news_aggregator: Reply to @%s tweet %s failed: %s — tweet reply_settings in API: %r",
+            tw_username, target_tweet.id, exc,
+            (target_tweet.data if hasattr(target_tweet, "data") else {}).get("reply_settings"),
+        )
 
 
 async def _twitter_auto_comment(tg_username: str, news_context: str) -> None:

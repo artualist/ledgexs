@@ -146,44 +146,61 @@ _ONCHAIN_PROMPT_TMPL = (
 )
 
 _THREAD_PROMPT_TMPL = (
-    "You are a senior crypto research analyst at @Ledgexs.\n"
+    "You are a senior macro and crypto research analyst at @Ledgexs.\n"
     "Live market context:\n{market_context}\n\n"
-    "Write a 4-tweet research thread on: '{topic}'\n\n"
-    "Each tweet MUST advance a single coherent argument — not four separate observations.\n\n"
-    "Tweet 1 — HOOK (MAX 180 chars): One counterintuitive or underreported claim "
-    "backed by a specific number or historical fact. End with 🧵. "
-    "Do NOT open with 'Did you know' or 'Here's why'.\n\n"
-    "Tweet 2 — EVIDENCE (MAX 240 chars): Cite SPECIFIC figures from the market context. "
-    "No vague statements. Every claim needs a number. Show your work.\n\n"
-    "Tweet 3 — NUANCE (MAX 240 chars): The part most analysts miss. "
-    "Include a BEARISH risk, a historical caveat where the thesis failed, or a conflicting signal. "
-    "A thread without a real counter-argument is just propaganda.\n\n"
-    "Tweet 4 — CONCLUSION (MAX 200 chars): A calibrated, probabilistic outlook. "
-    "NOT a price prediction. What specific metric or event would CONFIRM or DENY the thesis?\n\n"
-    "Tone: senior analyst writing for institutional-grade traders. Precise. Unsentimental.\n"
+    "Current trending news:\n{news_context}\n\n"
+    "Pick the SINGLE MOST SIGNIFICANT macro or geopolitical event from the news above "
+    "that is currently relevant to financial markets and crypto. "
+    "DO NOT write about individual coin price action or technical levels. "
+    "Focus on real-world events: central bank decisions, geopolitics, regulation, major economic data, "
+    "institutional moves, or structural market shifts.\n\n"
+    "Write a 6-tweet research thread structured exactly as follows:\n\n"
+    "Tweet 1 — HOOK (MAX 200 chars): "
+    "BOLD TITLE IN CAPS + emojis describing the event. "
+    "Then 1-2 sentences explaining why it matters RIGHT NOW for markets. "
+    "End with '🧵 Thread'. Make it impossible to scroll past.\n\n"
+    "Tweet 2 — WHAT HAPPENED (MAX 240 chars): "
+    "Specific facts and numbers about the event. No vague statements.\n\n"
+    "Tweet 3 — CRYPTO/MARKET IMPACT (MAX 240 chars): "
+    "How does this directly affect crypto and traditional financial markets right now?\n\n"
+    "Tweet 4 — HISTORICAL PRECEDENT (MAX 240 chars): "
+    "What happened last time something similar occurred? Specific example with outcome.\n\n"
+    "Tweet 5 — RISKS & SCENARIOS (MAX 240 chars): "
+    "Two or three key risks or scenarios to watch. What would confirm or deny the thesis?\n\n"
+    "Tweet 6 — CTA (MAX 240 chars): "
+    "Friendly self-promo directing readers to Ledgexs channels for more intelligence like this:\n"
+    "• Telegram news: t.me/ledgexsofficial\n"
+    "• Whale alerts: t.me/LedgexsWhale\n"
+    "• Whale bot: @LX_Whale_Bot on Telegram\n"
+    "• Follow @Ledgexs on X\n"
+    "Keep it genuine and concise — not spammy.\n\n"
+    "Tone: senior analyst writing for institutional-grade traders. Sharp, engaging, not dry.\n"
     "FORBIDDEN in all tweets: hashtags, cashtags ($SYMBOL — write BTC not $BTC), "
-    "'NFA', 'DYOR', 'to the moon', hype language.\n\n"
-    "Output ONLY a valid JSON array of exactly 4 strings:\n"
-    "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\"]"
+    "'NFA', 'DYOR', 'to the moon', hype language.\n"
+    "REQUIRED: at least one specific number or data point per tweet (tweets 1-5).\n\n"
+    "Output ONLY a valid JSON array of exactly 6 strings:\n"
+    "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\", \"tweet5\", \"tweet6\"]"
 )
 
-_THREAD_TOPICS = [
-    "Why Bitcoin dominance signals are misleading at current levels — and what to watch instead",
-    "The on-chain metric that preceded every major crypto top in the last two cycles",
-    "Why stablecoin supply growth precedes bull runs — but also why it's failing as a signal now",
-    "Fear & Greed at extremes: when the contrarian trade works and when it destroys accounts",
-    "The real relationship between US 10Y yields and crypto risk appetite — it's not what you think",
-    "CEX outflow surges: genuine accumulation signal or just self-custody narrative?",
-    "Dead-cat bounce vs true reversal: the 3 on-chain conditions that separate them",
-    "Why most altcoin season analysis is wrong — and what BTC dominance actually measures",
-    "The hidden cost of crypto market cycles compressing: who wins and who loses",
-    "DeFi TVL as a market health metric: what it shows, what it hides, and when it lies",
-    "Why exchange reserve depletion is both a bullish signal and a systemic risk",
-    "The funding rate trap: how perpetual futures sentiment misleads retail traders",
-    "Miner behaviour near cycle bottoms: capitulation signals and their false positives",
-    "Institutional vs retail flow divergence — how to read it and why it matters now",
-    "The liquidity mirage: why on-paper crypto market caps overstate real exit liquidity",
-    "Network value to transaction ratio (NVT): the most abused metric in crypto analysis",
+# Fallback topics used only when live news fetch returns no usable data.
+# Topics are deliberately macro/geopolitical — not coin-specific — to maximise engagement.
+_THREAD_TOPICS_FALLBACK = [
+    "How central bank rate decisions ripple through crypto markets",
+    "Why geopolitical tensions drive capital into Bitcoin as a reserve asset",
+    "The relationship between US dollar strength and global crypto risk appetite",
+    "How US-China trade tensions reshape the global crypto mining landscape",
+    "The IMF, World Bank, and crypto: an uneasy coexistence with trillion-dollar implications",
+    "Energy policy, oil prices, and the hidden link to Bitcoin's mining economics",
+    "How sovereign debt crises historically trigger crypto adoption cycles",
+    "The real reason institutional money moves in and out of crypto during market stress",
+    "Global inflation regimes and why crypto behaves differently in each one",
+    "How banking sector crises create structural demand for self-custodied assets",
+    "Why emerging market currency collapses consistently drive crypto on-ramp volume",
+    "The EU's MiCA framework: what it actually changes for global crypto markets",
+    "CBDC rollouts worldwide: threat or catalyst for decentralised crypto adoption?",
+    "How global sanctions and financial exclusion accelerate crypto infrastructure growth",
+    "The strategic Bitcoin reserve debate: what it means if governments hold BTC",
+    "Why crypto market cycles are increasingly correlated with traditional risk-on/off regimes",
 ]
 
 # ── Client initialisation ──────────────────────────────────────────────────────
@@ -803,26 +820,52 @@ def _post_onchain() -> None:
 
 # ── Feature 5: Thread Storytelling ────────────────────────────────────────────
 
+def _fetch_trending_news() -> str:
+    """Fetch top trending crypto/macro news headlines from CryptoPanic free API.
+
+    Returns a formatted string of headlines for use in the thread prompt,
+    or a curated fallback topic string if the API is unavailable.
+    """
+    try:
+        data = _safe_get(
+            "https://cryptopanic.com/api/free/v1/posts/",
+            params={"public": "true", "filter": "hot", "kind": "news"},
+        )
+        if data and isinstance(data.get("results"), list):
+            headlines = [
+                r.get("title", "")
+                for r in data["results"][:8]
+                if r.get("title")
+            ]
+            if headlines:
+                return "TOP TRENDING NEWS (use the most impactful macro/geopolitical one):\n" + "\n".join(
+                    f"• {h}" for h in headlines
+                )
+    except Exception as exc:
+        logger.debug("twitter_engagement: news fetch failed: %s", exc)
+
+    # Fallback: provide a macro topic context for GPT to work with
+    import random as _rnd
+    fallback = _rnd.choice(_THREAD_TOPICS_FALLBACK)
+    return f"No live news available. Write about this macro topic instead:\n• {fallback}"
+
+
 async def _thread_storytelling_loop() -> None:
-    """Every 12 hours: post a 4-tweet analytical thread on a crypto market topic."""
+    """Every 12 hours: post a 6-tweet analytical thread on a major macro/geopolitical event."""
     await asyncio.sleep(900)  # 15 min initial delay
     logger.info("twitter_engagement: thread_storytelling_loop started.")
-
-    _topic_index = 0
 
     while True:
         last_ts = _state.get("thread_last_ts", 0.0)
         if time.time() - last_ts >= THREAD_INTERVAL_S:
             loop = asyncio.get_running_loop()
 
-            # Rotate through topics deterministically
-            topic_idx = _topic_index % len(_THREAD_TOPICS)
-            topic = _THREAD_TOPICS[topic_idx]
-            _topic_index += 1
-
-            # Build current market context to ground the thread in real data
-            market_context = await loop.run_in_executor(None, _build_market_context)
-            await loop.run_in_executor(None, _post_thread_now, topic, market_context)
+            # Fetch live news headlines + market context in parallel via executor
+            market_context, news_context = await asyncio.gather(
+                loop.run_in_executor(None, _build_market_context),
+                loop.run_in_executor(None, _fetch_trending_news),
+            )
+            await loop.run_in_executor(None, _post_thread_now, news_context, market_context)
 
         await asyncio.sleep(1800)
 
@@ -867,10 +910,10 @@ def _build_market_context() -> str:
     return "\n".join(lines) if lines else "Market data temporarily unavailable."
 
 
-def _post_thread_now(topic: str, market_context: str) -> None:
-    """Synchronous: generate thread via GPT and post."""
-    prompt = _THREAD_PROMPT_TMPL.format(topic=topic, market_context=market_context)
-    raw = _gpt(prompt, max_tokens=600, temperature=0.8)
+def _post_thread_now(news_context: str, market_context: str) -> None:
+    """Synchronous: generate 6-tweet thread via GPT and post."""
+    prompt = _THREAD_PROMPT_TMPL.format(news_context=news_context, market_context=market_context)
+    raw = _gpt(prompt, max_tokens=900, temperature=0.8)
     if not raw:
         return
 
@@ -879,13 +922,13 @@ def _post_thread_now(topic: str, market_context: str) -> None:
         # GPT sometimes wraps the JSON in markdown code blocks — strip them
         clean = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("```").strip()
         tweets: list[str] = json.loads(clean)
-        if not isinstance(tweets, list) or len(tweets) < 2:
-            raise ValueError("not a list")
+        if not isinstance(tweets, list) or len(tweets) < 6:
+            raise ValueError(f"expected 6 tweets, got {len(tweets) if isinstance(tweets, list) else type(tweets)}")
     except Exception as exc:
         logger.warning("twitter_engagement: thread JSON parse failed: %s — raw: %r", exc, raw[:200])
         return
 
-    logger.info("twitter_engagement: posting thread on topic: %r", topic[:60])
+    logger.info("twitter_engagement: posting 6-tweet thread — context: %r", news_context[:80])
     success = _post_thread(tweets)
     if success:
         _state["thread_last_ts"] = time.time()

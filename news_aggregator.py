@@ -204,6 +204,18 @@ _twitter_v2, _twitter_v1 = _build_twitter_clients()
 _dedup_cache: deque[str] = deque(maxlen=DEDUP_CACHE_SIZE)
 _dedup_lock  = threading.Lock()
 
+# Serialises AI dedup calls so concurrent messages never race past an empty cache.
+# Must be acquired BEFORE the AI call and released AFTER _cache_add() so the
+# second message always sees the first message's result in the cache.
+_dedup_processing_lock: asyncio.Lock | None = None
+
+
+def _get_dedup_lock() -> asyncio.Lock:
+    global _dedup_processing_lock
+    if _dedup_processing_lock is None:
+        _dedup_processing_lock = asyncio.Lock()
+    return _dedup_processing_lock
+
 
 def _cache_add(summary: str) -> None:
     with _dedup_lock:
@@ -735,22 +747,29 @@ def _sync_twitter_auto_comment(tg_username: str, news_context: str, reply_text: 
         )
         return
 
-    # ── Step 3: post the reply ────────────────────────────────────────────────
+    # ── Step 3: post as a QUOTE TWEET (not a reply) ──────────────────────────
+    # WHY: Twitter API v2 returns 403 "you have not been mentioned or otherwise
+    # engaged" when using in_reply_to_tweet_id, even when the tweet's
+    # reply_settings field says "everyone".  This is an API-tier enforcement
+    # that is separate from the UI reply_settings — it requires prior engagement
+    # from the original author, which third-party bots almost never have.
+    # quote_tweet_id bypasses this restriction entirely: quote tweets are
+    # first-class tweets on our own timeline and can always be created regardless
+    # of whose tweet we quote.
     try:
         _twitter_v2.create_tweet(
             text=reply_text,
-            in_reply_to_tweet_id=str(target_tweet.id),
+            quote_tweet_id=str(target_tweet.id),
             user_auth=True,
         )
         logger.info(
-            "news_aggregator: Auto-commented on @%s tweet (id=%s) — Success!",
+            "news_aggregator: Quote-tweeted @%s tweet (id=%s) — Success!",
             tw_username, target_tweet.id,
         )
     except Exception as exc:
         logger.warning(
-            "news_aggregator: Reply to @%s tweet %s failed: %s — tweet reply_settings in API: %r",
+            "news_aggregator: Quote-tweet of @%s tweet %s failed: %s",
             tw_username, target_tweet.id, exc,
-            (target_tweet.data if hasattr(target_tweet, "data") else {}).get("reply_settings"),
         )
 
 
@@ -799,26 +818,41 @@ async def _handle_news(
 
     loop = asyncio.get_running_loop()
 
-    # 1. AI Rewrite ve Duplicate Kontrolü (run_in_executor — blocks for 1-5s)
-    try:
-        rewritten = await loop.run_in_executor(None, _ai_dedup_and_rewrite, raw_text)
-        if rewritten is None:  # Duplicate
-            return
-    except Exception as exc:
-        logger.warning("news_aggregator: AI failed (%s) — using fallback.", exc)
-        rewritten = _fallback_rewrite(raw_text)
-        if not rewritten:
+    # 1. AI Rewrite ve Duplicate Kontrolü — SERIALIZED via _dedup_processing_lock.
+    #
+    # WHY: _handle_news runs concurrently for every incoming message.  Without a
+    # lock, three messages about the same event can all reach run_in_executor at
+    # the same instant, read an identical (empty) cache snapshot, all pass the
+    # duplicate check, and all get posted.  The lock forces sequential processing
+    # so each message sees the updated cache from the previous one.
+    #
+    # _cache_add() is called INSIDE the lock (immediately after AI approval) so
+    # the next waiter finds the result in the cache before it even starts its AI
+    # call.  Posting to Telegram / Twitter happens OUTSIDE the lock to avoid
+    # holding it during slow HTTP calls.
+    rewritten: str | None = None
+    async with _get_dedup_lock():
+        try:
+            rewritten = await loop.run_in_executor(None, _ai_dedup_and_rewrite, raw_text)
+            if rewritten is None:  # Duplicate or SKIP detected by AI
+                return
+        except Exception as exc:
+            logger.warning("news_aggregator: AI failed (%s) — using fallback.", exc)
+            rewritten = _fallback_rewrite(raw_text)
+            if not rewritten:
+                return
+
+        # 2. SKIP / stray control-word guard (second line of defence)
+        _cw = rewritten.strip().rstrip('.,!? \n').upper()
+        if _cw in ("SKIP", "DUPLICATE"):
+            logger.info("Skipping control-word output from %s: %r", source_username, rewritten[:30])
             return
 
-    # 2. SKIP / stray control-word guard (second line of defence)
-    # _ai_dedup_and_rewrite already catches DUPLICATE and SKIP, but if the
-    # fallback path or any other edge case produces a control word, stop here.
-    _cw = rewritten.strip().rstrip('.,!? \n').upper()
-    if _cw in ("SKIP", "DUPLICATE"):
-        logger.info("Skipping control-word output from %s: %r", source_username, rewritten[:30])
-        return
+        # Add to cache NOW — while still holding the lock — so the next
+        # concurrent message always sees this result before it calls the AI.
+        _cache_add(_strip_html(rewritten))
 
-    # 3. Medyayı indir
+    # 3. Medyayı indir (lock dışında — yavaş I/O, dedup'u etkilemez)
     media_paths: list[str] = []
     _ensure_media_dir()
     for msg in messages:
@@ -831,7 +865,7 @@ async def _handle_news(
         except Exception as exc:
             logger.debug("news_aggregator: media download failed: %s", exc)
 
-    # 4. Paylaşım ve Cache Güncelleme
+    # 4. Paylaşım (lock dışında)
     try:
         clean_tg_text = _remove_hashtags(rewritten)
 
@@ -844,8 +878,6 @@ async def _handle_news(
             logger.info("news_aggregator: Text-only news sent to Telegram.")
 
         await _twitter_auto_comment(source_username, rewritten)
-
-        _cache_add(_strip_html(rewritten))
 
     finally:
         _cleanup_media_dir()

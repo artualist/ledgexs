@@ -3141,6 +3141,13 @@ if __name__ == "__main__":
     except Exception as _news_exc:
         logger.warning("News aggregator failed to start (non-fatal): %s", _news_exc)
 
+    # ── Twitter Engagement Engine (isolated — Telegram-independent) ──────────
+    try:
+        import twitter_engagement
+        twitter_engagement.start_twitter_engagement()
+    except Exception as _tw_eng_exc:
+        logger.warning("Twitter engagement failed to start (non-fatal): %s", _tw_eng_exc)
+
     # ── Whale Tracker (isolated — any failure here is non-fatal) ─────────────
     try:
         import whale_tracker

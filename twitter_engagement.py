@@ -62,7 +62,7 @@ TARGET_ACCOUNTS: list[str] = [
 # ── Timing constants ───────────────────────────────────────────────────────────
 REPLY_POLL_INTERVAL_S   = 60 * 60          # poll every 60 min; 1 reply per cycle
 REPLY_COOLDOWN_H        = 6                # min hours between replies to same account
-FEAR_GREED_INTERVAL_S   = 6 * 3600        # Fear & Greed tweet cadence
+FEAR_GREED_UTC_HOUR     = 15               # Fear & Greed tweet hour (UTC)
 TOP_MOVERS_HOUR_UTC     = 9               # daily Top Movers post at 09:00 UTC
 ONCHAIN_INTERVAL_S      = 8 * 3600        # On-Chain Detective cadence
 THREAD_INTERVAL_S       = 12 * 3600       # Thread Storytelling cadence
@@ -279,14 +279,14 @@ def _save_state(state: dict) -> None:
 # In-memory state; hydrated from disk at startup.
 # Schema: {
 #   "replied": {"username": {"tweet_id": str, "ts": float}},
-#   "fear_greed_last_ts": float,
+#   "fear_greed_last_date": str,    # "YYYY-MM-DD"
 #   "top_movers_last_date": str,    # "YYYY-MM-DD"
 #   "onchain_last_ts": float,
 #   "thread_last_ts": float,
 # }
 _state: dict = _load_state()
 _state.setdefault("replied", {})
-_state.setdefault("fear_greed_last_ts", 0.0)
+_state.setdefault("fear_greed_last_date", "")
 _state.setdefault("top_movers_last_date", "")
 _state.setdefault("onchain_last_ts", 0.0)
 _state.setdefault("thread_last_ts", 0.0)
@@ -555,20 +555,26 @@ def _attempt_reply(username: str, tw: Any) -> bool:
 # ── Feature 2: Fear & Greed Index ─────────────────────────────────────────────
 
 async def _fear_and_greed_loop() -> None:
-    """Every 6 hours: fetch Fear & Greed Index, generate AI commentary, tweet."""
+    """Once daily at UTC 15:00: fetch Fear & Greed Index, generate AI commentary, tweet."""
     await asyncio.sleep(120)  # let the bot fully start first
     logger.info("twitter_engagement: fear_and_greed_loop started.")
 
     while True:
-        last_ts: float = _state.get("fear_greed_last_ts", 0.0)
-        if time.time() - last_ts >= FEAR_GREED_INTERVAL_S:
+        now_utc    = datetime.now(timezone.utc)
+        today_str  = now_utc.strftime("%Y-%m-%d")
+        last_date  = _state.get("fear_greed_last_date", "")
+
+        if now_utc.hour >= FEAR_GREED_UTC_HOUR and last_date != today_str:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, _post_fear_greed)
         else:
-            remaining = (last_ts + FEAR_GREED_INTERVAL_S - time.time()) / 60
-            logger.debug("twitter_engagement: fear_greed sleeping %.0f min.", remaining)
+            mins_left = max(0, (FEAR_GREED_UTC_HOUR - now_utc.hour) * 60 - now_utc.minute)
+            logger.debug(
+                "twitter_engagement: fear_greed — posted today: %s, next window in ~%d min.",
+                last_date == today_str, mins_left,
+            )
 
-        await asyncio.sleep(1800)  # check every 30 min; post when due
+        await asyncio.sleep(900)  # check every 15 min
 
 
 def _post_fear_greed() -> None:
@@ -611,7 +617,7 @@ def _post_fear_greed() -> None:
 
     tid = _post_tweet(full_tweet)
     if tid:
-        _state["fear_greed_last_ts"] = time.time()
+        _state["fear_greed_last_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         _save_state(_state)
 
 

@@ -1,5 +1,5 @@
 """
-whale_tracker.py
+bot/whale_tracker.py
 ====================
 On-chain whale transfer monitor — powered by the Ledgexs Bot's existing
 RPC infrastructure (Web3/EVM, Solana JSON-RPC, Tron TronGrid REST).
@@ -71,15 +71,15 @@ NEWS_CHANNEL  = "@Ledgexs"
 WHALE_SIG = (
     "\n\n━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | "
-    "<a href='https://t.me/Ledgexs'>News</a> | "
-    "<a href='https://x.com/Ledgexs'>X</a> | "
-    "<a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
+    "<a href='https://t.me/Ledgexs'> News</a> | "
+    "<a href='https://x.com/Ledgexs'> X</a> | "
+    "<a href='https://t.me/LedgexsBot'> LX Whale Bot</a>"
 )
 
 NEWS_SIG = (
     "\n\n━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | "
-    "<a href='https://t.me/LedgexsWhaleAlert'>Whale Alerts</a> | "
+    "<a href='https://t.me/LedgexsWhaleAlert'> Whale Alerts</a> | "
     "<a href='https://x.com/Ledgexs'>X</a> | "
     "<a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
@@ -175,18 +175,82 @@ _TRANSFER_ABI: list[dict] = [
     }
 ]
 
-# ── Alert cooldown (per symbol, avoids spam bursts) ───────────────────────────
+# ── Alert quality filter — only CEX/DEX events are worth alerting ─────────────
+# Cold wallet transfers (e.g. Tether treasury reshuffles) are excluded because
+# they produce dozens of near-identical alerts with the same sender daily.
 
-_ALERT_COOLDOWN_S  = 120   # seconds
+_ALLOWED_TX_PREFIXES = ("🏛️", "🏦", "🔥", "🚨")
+# 🏛️ CEX DEPOSIT / INTERNAL, 🏦 CEX WITHDRAWAL, 🔥 WHALE BUY, 🚨 WHALE SELL
+# 📦 COLD WALLET TRANSFER → excluded
+
+# ── Daily alert cap ───────────────────────────────────────────────────────────
+
+DAILY_ALERT_LIMIT = 10
+_daily_count: int     = 0
+_daily_date:  str     = ""
+_daily_lock           = threading.Lock()
+
+# ── Per-sender cooldown (6 h) — same wallet can't trigger back-to-back ────────
+
+_SENDER_COOLDOWN_S = 6 * 3600
+_sender_seen: dict[str, float] = {}
+_sender_lock = threading.Lock()
+
+# ── Tx-level cooldown (120 s) — prevents the exact same tx firing twice ───────
+
+_ALERT_COOLDOWN_S  = 120
 _last_alert: dict[str, float] = {}
 _alert_lock = threading.Lock()
 
+
 def _is_cooled(key: str) -> bool:
+    """True only if this tx key hasn't fired within the cooldown window."""
     with _alert_lock:
         if time.time() - _last_alert.get(key, 0) < _ALERT_COOLDOWN_S:
             return False
         _last_alert[key] = time.time()
         return True
+
+
+def _is_alertable(tx_type: str, sender: str) -> bool:
+    """
+    Gate every alert through three independent checks:
+
+    1. TX type must be meaningful (CEX deposit/withdrawal or DEX buy/sell).
+       Cold wallet transfers are silently dropped.
+    2. Daily cap: no more than DAILY_ALERT_LIMIT alerts per calendar day.
+    3. Per-sender cooldown: same source address can't fire again for 6 h.
+
+    Returns True if the alert should be posted, False otherwise.
+    """
+    from datetime import date as _date
+
+    # 1. Type quality check
+    if not any(tx_type.startswith(p) for p in _ALLOWED_TX_PREFIXES):
+        logger.debug("whale_tracker: suppressed '%s' (cold wallet / unclassified).", tx_type)
+        return False
+
+    # 2. Daily cap
+    today = str(_date.today())
+    with _daily_lock:
+        global _daily_count, _daily_date
+        if _daily_date != today:
+            _daily_date  = today
+            _daily_count = 0
+        if _daily_count >= DAILY_ALERT_LIMIT:
+            logger.debug("whale_tracker: daily cap (%d) reached — suppressed.", DAILY_ALERT_LIMIT)
+            return False
+        _daily_count += 1
+
+    # 3. Per-sender cooldown
+    sender_key = sender.lower()
+    with _sender_lock:
+        if time.time() - _sender_seen.get(sender_key, 0) < _SENDER_COOLDOWN_S:
+            logger.debug("whale_tracker: sender %s in cooldown — suppressed.", _shorten(sender))
+            return False
+        _sender_seen[sender_key] = time.time()
+
+    return True
 
 # ── Standalone price cache (no main.py import needed) ─────────────────────────
 
@@ -359,9 +423,9 @@ def _build_alert(
 ) -> str:
     return (
         f"<b>🐋 WHALE ALERT: {tx_type} on {network}</b>\n\n"
+        f"💰 Value: <b>{_fmt_usd(amount_usd)}</b>\n"
         f"📊 Token: <b>{symbol}</b>\n"
         f"📦 Amount: <b>{_fmt_amount(amount, symbol)}</b>\n"
-        f"💰 Value: <b>{_fmt_usd(amount_usd)}</b>\n"
         f"📤 From: {_wallet_label(sender)}\n"
         f"📥 To: {_wallet_label(receiver)}\n"
         f"🔗 Tx: <a href='{tx_url}'>{_shorten(tx_hash)}</a>"
@@ -405,6 +469,9 @@ def notify_transfer(
     tx_url  = f"{explorers.get(chain_id, 'https://etherscan.io/tx')}/{tx_hash}"
     network = _CHAIN_LABELS.get(chain_id, chain_id.upper())
     tx_type = _classify_tx(chain_id, sender, receiver)
+
+    if not _is_alertable(tx_type, sender):
+        return
 
     text = _build_alert(
         tx_type=tx_type, network=network, symbol=symbol,
@@ -505,8 +572,10 @@ def _evm_scan_loop() -> None:
                             continue
 
                         tx_type = _classify_tx(chain_id, sender, receiver)
-                        tx_url  = f"{exp_url}/{tx_hash}"
+                        if not _is_alertable(tx_type, sender):
+                            continue
 
+                        tx_url  = f"{exp_url}/{tx_hash}"
                         text = _build_alert(
                             tx_type=tx_type, network=network, symbol=symbol,
                             amount=amount, amount_usd=amount_usd,
@@ -634,6 +703,9 @@ def _sol_scan_loop() -> None:
                         except Exception:
                             tx_type = "📦 TRANSFER"
 
+                        if not _is_alertable(tx_type, sender):
+                            continue
+
                         text = _build_alert(
                             tx_type=tx_type, network="🧬 Solana", symbol=symbol,
                             amount=diff, amount_usd=amount_usd,
@@ -733,15 +805,20 @@ def _tron_scan_loop() -> None:
                     receiver = result.get("_to",   result.get("to",   "unknown"))
                     tx_url   = f"https://tronscan.org/#/transaction/{tx_hash}"
 
+                    # Classify via CEX catalog (same logic as EVM)
+                    tx_type = _classify_tx("tron", sender, receiver)
+                    if not _is_alertable(tx_type, sender):
+                        continue
+
                     text = _build_alert(
-                        tx_type="📦 TRC-20 TRANSFER", network="🔴 Tron", symbol=symbol,
+                        tx_type=tx_type, network="🔴 Tron", symbol=symbol,
                         amount=amount, amount_usd=amount_usd,
                         sender=sender, receiver=receiver,
                         tx_hash=tx_hash, tx_url=tx_url,
                     )
                     _send_telegram(text)
                     logger.info(
-                        "whale_tracker: 🐋 TRON USDT transfer %s", _fmt_usd(amount_usd)
+                        "whale_tracker: 🐋 TRON %s %s %s", tx_type, _fmt_usd(amount_usd), symbol
                     )
                 except Exception as exc:
                     logger.debug("whale_tracker: Tron event parse error: %s", exc)

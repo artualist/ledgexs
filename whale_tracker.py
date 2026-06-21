@@ -179,8 +179,9 @@ _TRANSFER_ABI: list[dict] = [
 # Cold wallet transfers (e.g. Tether treasury reshuffles) are excluded because
 # they produce dozens of near-identical alerts with the same sender daily.
 
-_ALLOWED_TX_PREFIXES = ("🏛️", "🏦", "🔥", "🚨")
+_ALLOWED_TX_PREFIXES = ("🏛️", "🏦", "🔥", "🚨", "🟠")
 # 🏛️ CEX DEPOSIT / INTERNAL, 🏦 CEX WITHDRAWAL, 🔥 WHALE BUY, 🚨 WHALE SELL
+# 🟠 native BTC large transfer (always noteworthy at $100 M+)
 # 📦 COLD WALLET TRANSFER → excluded
 
 # ── Daily alert cap ───────────────────────────────────────────────────────────
@@ -826,6 +827,110 @@ def _tron_scan_loop() -> None:
         time.sleep(20)
 
 
+# ── Bitcoin native scan loop (Blockstream API — no key required) ───────────────
+
+def _btc_scan_loop() -> None:
+    """
+    Scans native Bitcoin blockchain for large transfers using the free
+    Blockstream.info REST API.  No RPC URL or API key needed.
+
+    Strategy:
+      - Poll /blocks/tip/height every 60 s.
+      - For each new block, fetch its transactions.
+      - For every tx, find the single largest output.
+      - If that output > $100 M equivalent → alert.
+
+    Why single largest output?
+      CEX withdrawals (e.g. "2 000 BTC from OKX → cold wallet") concentrate
+      almost all value in one output.  This reliably catches those moves while
+      ignoring UTXO fan-out consolidation transactions.
+    """
+    if not _REQUESTS_OK:
+        logger.info("whale_tracker: BTC scan disabled (requests not installed).")
+        return
+
+    API = "https://blockstream.info/api"
+
+    try:
+        tip_text = _requests.get(f"{API}/blocks/tip/height", timeout=12).text.strip()
+        last_height = int(tip_text)
+        logger.info("whale_tracker: Bitcoin scan active at block %d.", last_height)
+    except Exception as exc:
+        logger.warning("whale_tracker: Blockstream API unreachable — BTC scan disabled: %s", exc)
+        return
+
+    while True:
+        time.sleep(60)
+        try:
+            tip = int(_requests.get(f"{API}/blocks/tip/height", timeout=12).text.strip())
+            if tip <= last_height:
+                continue
+
+            for height in range(last_height + 1, tip + 1):
+                try:
+                    block_hash = _requests.get(
+                        f"{API}/block-height/{height}", timeout=12
+                    ).text.strip()
+                    txs: list[dict] = _requests.get(
+                        f"{API}/block/{block_hash}/txs", timeout=20
+                    ).json()
+                except Exception as exc:
+                    logger.debug("whale_tracker: BTC block %d fetch: %s", height, exc)
+                    continue
+
+                btc_price = _get_price("BTC")
+
+                for tx in txs:
+                    vout: list[dict] = tx.get("vout") or []
+                    if not vout:
+                        continue
+
+                    # Largest single recipient output
+                    largest = max(vout, key=lambda o: o.get("value", 0))
+                    value_sat = largest.get("value", 0)
+                    amount    = value_sat / 1e8          # satoshis → BTC
+                    amount_usd = amount * btc_price if btc_price > 0 else 0
+
+                    if not filter_whale_tx(amount_usd, "BTC"):
+                        continue
+
+                    tx_hash = tx.get("txid", "")
+                    cooldown_key = f"btc:BTC:{tx_hash}"
+                    if not _is_cooled(cooldown_key):
+                        continue
+
+                    # Best-effort sender: first input's previous output address
+                    vin: list[dict] = tx.get("vin") or []
+                    sender = "unknown"
+                    if vin:
+                        prevout = vin[0].get("prevout") or {}
+                        sender  = prevout.get("scriptpubkey_address", "unknown")
+
+                    receiver = largest.get("scriptpubkey_address", "unknown")
+                    tx_type  = "🟠 BTC LARGE TRANSFER"
+
+                    if not _is_alertable(tx_type, sender):
+                        continue
+
+                    tx_url = f"https://mempool.space/tx/{tx_hash}"
+                    text = _build_alert(
+                        tx_type=tx_type, network="🟠 Bitcoin",
+                        symbol="BTC", amount=amount, amount_usd=amount_usd,
+                        sender=sender, receiver=receiver,
+                        tx_hash=tx_hash, tx_url=tx_url,
+                    )
+                    _send_telegram(text)
+                    logger.info(
+                        "whale_tracker: 🐋 BTC %s block %d tx %s",
+                        _fmt_usd(amount_usd), height, tx_hash[:12],
+                    )
+
+            last_height = tip
+
+        except Exception as exc:
+            logger.warning("whale_tracker: BTC scan error: %s", exc)
+
+
 # ── Promotional ad loops ──────────────────────────────────────────────────────
 
 _AD_WHALE = (
@@ -895,6 +1000,7 @@ def start_whale_tracker(bot: Any = None) -> None:
         (lambda: _safe_loop(_evm_scan_loop,   "EVM"),   "WhaleEVM"),
         (lambda: _safe_loop(_sol_scan_loop,   "SOL"),   "WhaleSOL"),
         (lambda: _safe_loop(_tron_scan_loop,  "TRON"),  "WhaleTRON"),
+        (lambda: _safe_loop(_btc_scan_loop,   "BTC"),   "WhaleBTC"),
         (_ad_whale_loop,                                 "WhaleAdLoop"),
         (_ad_news_loop,                                  "WhaleNewsAdLoop"),
     ]
@@ -902,7 +1008,7 @@ def start_whale_tracker(bot: Any = None) -> None:
         threading.Thread(target=target, daemon=True, name=name).start()
 
     logger.info(
-        "whale_tracker: started — EVM(%s), SOL(%s), TRON(%s) | "
+        "whale_tracker: started — EVM(%s), SOL(%s), TRON(%s), BTC(✓) | "
         "alerts → %s | whale-ad 6h | news-ad 12h",
         "✓" if (_ETH_RPC or _BSC_RPC) else "✗",
         "✓" if _SOL_RPC else "✗",

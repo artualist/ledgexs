@@ -138,7 +138,7 @@ AI_COMBINED_PROMPT = (
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
     "2. LENGTH: MAXIMUM 1-2 sentences summarising the news.\n"
-    "3. AI INSIGHT: 1-2 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
+    "3. AI INSIGHT: MAXIMUM ONLY 1 sentence of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and source citations.\n\n"
 

@@ -71,15 +71,15 @@ NEWS_CHANNEL  = "@Ledgexs"
 WHALE_SIG = (
     "\n\n━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | "
-    "<a href='https://t.me/Ledgexs'> News</a> | "
-    "<a href='https://x.com/Ledgexs'> X</a> | "
-    "<a href='https://t.me/LedgexsBot'> LX Whale Bot</a>"
+    "<a href='https://t.me/Ledgexs'>News</a> | "
+    "<a href='https://x.com/Ledgexs'>X</a> | "
+    "<a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
 
 NEWS_SIG = (
     "\n\n━━━━━━━━━━━━━━━\n"
     "<b>Ledgexs</b> | "
-    "<a href='https://t.me/LedgexsWhaleAlert'> Whale Alerts</a> | "
+    "<a href='https://t.me/LedgexsWhaleAlert'>Whale Alerts</a> | "
     "<a href='https://x.com/Ledgexs'>X</a> | "
     "<a href='https://t.me/LedgexsBot'>LX Whale Bot</a>"
 )
@@ -359,11 +359,11 @@ def _build_alert(
 ) -> str:
     return (
         f"<b>🐋 WHALE ALERT: {tx_type} on {network}</b>\n\n"
-        f"💰 Value:    <b>{_fmt_usd(amount_usd)}</b>\n"
-        f"📊 Token:    <b>{symbol}</b>\n"
-        f"📦 Amount:   <b>{_fmt_amount(amount, symbol)}</b>\n"
-        f"📤 From:     {_wallet_label(sender)}\n"
-        f"📥 To:       {_wallet_label(receiver)}\n"
+        f"📊 Token: <b>{symbol}</b>\n"
+        f"📦 Amount: <b>{_fmt_amount(amount, symbol)}</b>\n"
+        f"💰 Value: <b>{_fmt_usd(amount_usd)}</b>\n"
+        f"📤 From: {_wallet_label(sender)}\n"
+        f"📥 To: {_wallet_label(receiver)}\n"
         f"🔗 Tx: <a href='{tx_url}'>{_shorten(tx_hash)}</a>"
         f"{WHALE_SIG}"
     )
@@ -756,7 +756,7 @@ _AD_WHALE = (
     "Every $100M+ BTC/ETH and $5M+ altcoin on-chain move lands here "
     "the moment it hits the blockchain — no delay, no noise.\n\n"
     "📲 Share this channel with fellow traders.\n"
-    "👉 <a href='https://t.me/LedgexsBot'>Track live with @LedgexsBot</a> — free, no sign-up."
+    "👉 Track live with @LedgexsBot — free, no sign-up."
 )
 
 _AD_NEWS = (
@@ -764,8 +764,8 @@ _AD_NEWS = (
     "Our on-chain monitor catches the biggest BTC, ETH, SOL and altcoin "
     "movements the instant they confirm on-chain.\n\n"
     "🆓 Free to use — no subscription needed.\n"
-    "📲 Whale Alerts 👉 <a href='https://t.me/LedgexsWhale'>@LedgexsWhale</a>\n"
-    "🤖 Bot 👉 <a href='https://t.me/LedgexsBot'>@LedgexsBot</a>"
+    "📲 Whale Alerts 👉 @LedgexsWhale\n"
+    "🤖 Bot 👉 @LedgexsBot"
 )
 
 def _ad_whale_loop() -> None:

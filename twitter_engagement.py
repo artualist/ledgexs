@@ -91,6 +91,7 @@ _REPLY_PROMPT_TMPL = (
     "- Sound like a confident analyst, not a fan\n"
     "- 1 emoji max, only if it fits naturally\n"
     "- No hashtags. No @mentions. No 'Great point!' openers.\n"
+    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
     "Output ONLY the reply text, nothing else."
 )
 
@@ -104,6 +105,7 @@ _FEAR_GREED_PROMPT_TMPL = (
     "- Use 1-2 emojis where they add punch (😱 📊 🔥 💀 📉 📈 etc)\n"
     "- Short sentences. Line breaks for rhythm. Feels like a thread hook.\n"
     "- No hashtags. No newspaper language. Make people want to retweet.\n"
+    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
     "Output ONLY the tweet text."
 )
 
@@ -118,6 +120,7 @@ _TOP_MOVERS_PROMPT_TMPL = (
     "- Bold, confident, analyst voice\n"
     "- 1 emoji max\n"
     "- No hashtags\n"
+    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
     "Output ONLY the insight sentence(s)."
 )
 
@@ -133,6 +136,7 @@ _ONCHAIN_PROMPT_TMPL = (
     "- Investigative, urgent tone. Makes people feel like insiders.\n"
     "- 1-2 emojis for emphasis (🔍 🐋 🚨 etc)\n"
     "- No hashtags\n"
+    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags.\n"
     "Output ONLY the tweet text."
 )
 
@@ -148,6 +152,7 @@ _THREAD_PROMPT_TMPL = (
     "- Short punchy sentences. Line breaks. 1-2 emojis per tweet where impactful.\n"
     "- No hashtags. Sounds like a confident analyst, not a newsletter.\n"
     "- MUST reference actual numbers from the market context.\n"
+    "- CASHTAG RULE: write coin names WITHOUT the $ prefix (write BTC not $BTC). Zero cashtags per tweet.\n"
     "Output ONLY a JSON array of 4 strings. Example:\n"
     "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\"]"
 )

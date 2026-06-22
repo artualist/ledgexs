@@ -1190,6 +1190,17 @@ def _rebuild_qt_keyboard(
 # Shared executor for concurrent EVM chain scanning (sol/sui/tron use own threads)
 _CHAIN_EXECUTOR = ThreadPoolExecutor(max_workers=20, thread_name_prefix="ChainScan")
 
+# ── Alchemy credit savers ────────────────────────────────────────────────────
+# 1. Token metadata cache — decimals/symbol/name never change for a contract.
+#    Populated on first call; never expires.
+_token_meta_cache: dict[str, tuple[int, str, str]] = {}  # ca → (decimals, symbol, name)
+
+# 2. Block number cache — reuse the latest block across all tokens on the same
+#    chain within the same poll window (TTL = POLL_INTERVAL seconds).
+#    Avoids N separate eth_blockNumber calls for N tracked tokens per poll.
+_block_cache: dict[str, tuple[int, float]] = {}   # chain_id → (block_num, fetched_at)
+_block_cache_lock = threading.Lock()
+
 
 def _monitor_loop() -> None:
     logger.info("Whale monitor thread started (concurrent EVM scanner, workers=20).")
@@ -1836,7 +1847,20 @@ def _check_whale_activity(
         return
 
     key = f"{chain_id}:{ca}"
-    latest = w3.eth.block_number
+
+    # ── Block number: use cached value if still fresh (TTL = POLL_INTERVAL) ──
+    now = time.time()
+    with _block_cache_lock:
+        cached_block, fetched_at = _block_cache.get(chain_id, (0, 0.0))
+        if now - fetched_at < config.POLL_INTERVAL:
+            latest = cached_block
+        else:
+            try:
+                latest = w3.eth.block_number
+            except Exception:
+                return
+            _block_cache[chain_id] = (latest, now)
+
     from_b = last_seen.get(key, latest - 1)
     if from_b >= latest:
         return
@@ -1845,12 +1869,18 @@ def _check_whale_activity(
     contract: Contract = w3.eth.contract(
         address=Web3.to_checksum_address(ca), abi=ERC20_ABI
     )
-    try:
-        decimals = contract.functions.decimals().call()
-        symbol = contract.functions.symbol().call()
-        name = contract.functions.name().call()
-    except Exception:
-        decimals, symbol, name = 18, "???", "Unknown"
+
+    # ── Token metadata: fetch once, cache permanently (never changes) ─────────
+    ca_lc = ca.lower()
+    if ca_lc not in _token_meta_cache:
+        try:
+            decimals = contract.functions.decimals().call()
+            symbol   = contract.functions.symbol().call()
+            name     = contract.functions.name().call()
+            _token_meta_cache[ca_lc] = (decimals, symbol, name)
+        except Exception:
+            _token_meta_cache[ca_lc] = (18, "???", "Unknown")
+    decimals, symbol, name = _token_meta_cache[ca_lc]
 
     try:
         events = contract.events.Transfer.get_logs(
@@ -1871,6 +1901,14 @@ def _check_whale_activity(
         receiver = event["args"]["to"]
         tx_hash = event["transactionHash"].hex()
         block = event["blockNumber"]
+
+        # ── Pre-classify once per event (before per-user loop) ───────────────
+        # Only CEX deposits/withdrawals and DEX swaps are meaningful.
+        # Plain cold-wallet transfers (📦) are silently skipped — they generate
+        # noise and waste processing without actionable signal.
+        event_type = _classify_transfer(str(chain_id), str(sender), str(receiver))
+        if event_type == "📦 COLD WALLET TRANSFER":
+            continue
 
         # ── Global intelligence pass (runs once per event, not per user) ─────
         # NOTE: NO intelligence alerts are ever posted to the public channel.
@@ -1927,12 +1965,10 @@ def _check_whale_activity(
                     if amount < threshold_usd:
                         continue
 
-                # DEX / CEX classification (Premium only)
+                # Use the pre-classified event type (already filtered above).
+                # Premium users see the full label; free users see a generic one.
                 if premium:
-                    # Parametreleri garantiye alarak fonksiyona gönderiyoruz
-                    alert_type = _classify_transfer(
-                        str(chain_id), str(sender), str(receiver)
-                    )
+                    alert_type = event_type
                 else:
                     alert_type = "🐳 Whale Transfer"
 

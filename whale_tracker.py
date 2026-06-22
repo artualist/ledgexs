@@ -58,8 +58,9 @@ except ImportError:
 # ── Env vars ──────────────────────────────────────────────────────────────────
 
 _BOT_TOKEN   = os.environ.get("BOT_TOKEN", "")
-_ETH_RPC     = os.environ.get("ETH_RPC_URL", "") or os.environ.get("RPC_URL", "")
-_BSC_RPC     = os.environ.get("BSC_RPC_URL", "")
+# Free public RPC endpoints — no API key, no credit limits.
+_ETH_RPC     = "https://ethereum.publicnode.com"
+_BSC_RPC     = "https://bsc-dataseed.binance.org/"
 _SOL_RPC     = os.environ.get("SOL_RPC_URL", "")
 _TRON_RPC    = os.environ.get("TRON_RPC_URL", "")
 

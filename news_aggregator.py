@@ -118,7 +118,7 @@ AI_COMBINED_PROMPT = (
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
     "2. LENGTH: MAXIMUM 1-2 sentences summarising the news (NOT TOO LONG).\n"
-    "3. AI INSIGHT: MAXIMUM ONLY 1 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
+    "3. AI INSIGHT: MAXIMUM ONLY ! sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and source citations.\n\n"
 
@@ -530,15 +530,30 @@ async def _periodic_market_analysis(tg_client: Any) -> None:
                 await asyncio.sleep(900)
                 continue
 
-            coin        = trending_coins[0]    # top-1 trending coin only
-            market_data = await _get_market_data(coin)
+            # Try each trending coin in order until one returns valid market data.
+            # If CoinGecko returns 404 for a coin (delisted / ID mismatch),
+            # fall through to the next rather than retrying the same coin endlessly.
+            # Final fallback: BTC → ETH → SOL (always available).
+            FALLBACK_COINS = ["BTC", "ETH", "SOL"]
+            candidates = trending_coins + [c for c in FALLBACK_COINS if c not in trending_coins]
+
+            coin        = None
+            market_data = None
+            for candidate in candidates:
+                data = await _get_market_data(candidate)
+                if data is not None:
+                    coin        = candidate
+                    market_data = data
+                    break
+                logger.warning(
+                    "periodic_market_analysis: $%s returned no data — trying next candidate.", candidate
+                )
 
             if market_data is None:
                 logger.warning(
-                    "periodic_market_analysis: market data unavailable for $%s "
-                    "— skipping this round (no post made).", coin
+                    "periodic_market_analysis: all candidates failed — skipping this round."
                 )
-                await asyncio.sleep(900)  # retry sooner: 15 min
+                await asyncio.sleep(900)
                 continue
 
             logger.info("periodic_market_analysis: posting analysis for $%s", coin)
@@ -562,8 +577,7 @@ async def _periodic_market_analysis(tg_client: Any) -> None:
             # ── Telegram ─────────────────────────────────────────────────────
             await loop.run_in_executor(None, _post_to_telegram, analysis_text, [])
 
-            # ── X / Twitter ───────────────────────────────────────────────────
-            await loop.run_in_executor(None, _post_to_twitter, analysis_text, [])
+            # Market analysis posts to Telegram only — not cross-posted to X.
 
             logger.info("periodic_market_analysis: done — sleeping 4 h.")
 
@@ -772,6 +786,17 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
         return
 
     plain = _strip_html(rewritten_text)
+
+    # Twitter allows MAX 1 cashtag ($SYMBOL) per tweet.
+    # If the source text contains multiple cashtags, strip the $ prefix from
+    # all of them so the post goes through (BTC, ETH, SOL instead of $BTC, $ETH, $SOL).
+    cashtag_count = len(re.findall(r"\$[A-Z]{1,10}", plain))
+    if cashtag_count > 1:
+        plain = re.sub(r"\$([A-Z]{1,10})", r"\1", plain)
+        logger.debug(
+            "news_aggregator: stripped %d cashtags for Twitter (>1 not allowed).", cashtag_count
+        )
+
     tweet = (plain[: TWEET_MAX - 1] + "…") if len(plain) > TWEET_MAX else plain
 
     media_ids: list[int] = []
@@ -1007,15 +1032,11 @@ async def _run_news_client() -> None:
             # abs() because Telethon returns negative chat_ids for channels.
             event_chat_id = abs(event.chat_id or 0)
 
-            # ── DIAGNOSTIC: log every channel message so we can see exactly
-            # which usernames/IDs Telethon sees.  This is essential for
-            # debugging channels like @news_crypto whose username may differ
-            # from what is listed in SOURCE_CHANNELS.
-            # Log at INFO level so it always appears in Railway logs without
-            # needing to change the log level.  Each line shows:
-            #   chat_id  resolved_username  in_source_ids?  in_source_usernames?
-            # If a channel you expect to see never appears here, the Telegram
-            # account behind the session has NOT joined that channel.
+            # ── DIAGNOSTIC: log messages from recognised source channels only.
+            # Non-source senders (own bot posts, DMs, unrelated groups) are
+            # silently skipped here — they generate no log line at all.
+            # Change logger.debug → logger.info temporarily if you need to
+            # audit which channels Telethon is actually seeing.
             try:
                 _diag_chat = await event.get_chat()
                 _diag_uname = (getattr(_diag_chat, "username", None) or "").lower()
@@ -1023,8 +1044,8 @@ async def _run_news_client() -> None:
                 _diag_uname = ""
             _in_ids   = event_chat_id in _source_entity_ids
             _in_names = _diag_uname in _SOURCE_USERNAMES
-            if _in_ids or _in_names or _diag_uname:  # skip pure DM/group noise
-                logger.info(
+            if _in_ids or _in_names:  # only log genuine source-channel hits
+                logger.debug(
                     "TG-IN  id=%-14d  username=%-35s  id_match=%s  name_match=%s",
                     event_chat_id, _diag_uname or "(none)", _in_ids, _in_names,
                 )

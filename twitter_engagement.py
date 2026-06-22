@@ -8,11 +8,8 @@ Any exception inside is caught and logged — this module can NEVER crash main.p
 
 Features
 --------
-1. REPLY MONITOR      — polls TARGET_ACCOUNTS every 15 min; AI reply via v1.1
-2. FEAR & GREED       — every 6 h; alternative.me real data + GPT commentary
-3. TOP MOVERS         — daily at 09:00 UTC; CoinGecko top-3 gain/loss narrative
-4. ON-CHAIN DETECTIVE — every 8 h; blockchain.info BTC + CoinGecko ETH metrics
-5. THREAD STORYTELLING — every 12 h; 4-tweet GPT market narrative thread
+1. FEAR & GREED       — daily at UTC 15:00; alternative.me real data + GPT commentary
+2. TOP MOVERS         — daily at 09:00 UTC; CoinGecko top-3 gain/loss narrative
 
 All features degrade gracefully to no-op if API keys are missing.
 
@@ -38,30 +35,7 @@ import requests
 
 logger = logging.getLogger("whale_bot.twitter_engagement")
 
-# ── Target accounts — Twitter usernames (no @) ────────────────────────────────
-# The reply monitor will track these accounts and reply to their fresh tweets.
-TARGET_ACCOUNTS: list[str] = [
-    "elonmusk",
-    "cz_binance",
-    "arthur_hayes",
-    "saylor",
-    "VitalikButerin",
-    "WatcherGuru",
-    "DocumentingBTC",
-    "APompliano",
-    "RaoulGMI",
-    "CoinDesk",
-    "Cointelegraph",
-    "BitcoinMagazine",
-    "CryptoSlate",
-    "lookonchain",
-    "nansen_ai",
-    "TheBlock__",
-]
-
 # ── Timing constants ───────────────────────────────────────────────────────────
-REPLY_POLL_INTERVAL_S   = 60 * 60          # poll every 60 min; 1 reply per cycle
-REPLY_COOLDOWN_H        = 6                # min hours between replies to same account
 FEAR_GREED_UTC_HOUR     = 15               # Fear & Greed tweet hour (UTC)
 TOP_MOVERS_HOUR_UTC     = 9               # daily Top Movers post at 09:00 UTC
 ONCHAIN_INTERVAL_S      = 8 * 3600        # On-Chain Detective cadence
@@ -81,21 +55,6 @@ _AI_API_KEY = (
 _AI_BASE_URL = "https://api.openai.com/v1"
 
 # ── GPT prompts ────────────────────────────────────────────────────────────────
-
-_REPLY_PROMPT_TMPL = (
-    "You are a senior analyst at @Ledgexs, a crypto intelligence account.\n"
-    "@{username} just posted:\n\n\"{tweet_text}\"\n\n"
-    "Write ONE reply. Hard rules:\n"
-    "- HARD LIMIT: 200 characters. Count every character. Exceed this → output discarded.\n"
-    "- Must include at least one SPECIFIC data point, price level, or historical precedent.\n"
-    "  If the claim can't be backed by something concrete, challenge the premise instead.\n"
-    "- Objective: if the post is bullish, weigh the bearish case. If bearish, weigh the bull case.\n"
-    "- Tone: senior analyst — not a fan, not a troll, not a cheerleader.\n"
-    "- FORBIDDEN: 'Great point', 'Exactly', 'This', generic agreement, hype language.\n"
-    "- FORBIDDEN: hashtags, @mentions, cashtags ($SYMBOL — write BTC not $BTC).\n"
-    "- Write as if talking to a professional — dense, direct, no padding.\n"
-    "Output ONLY the reply text."
-)
 
 _FEAR_GREED_PROMPT_TMPL = (
     "You are a senior market strategist at @Ledgexs.\n"
@@ -255,9 +214,6 @@ _twitter_v2: Any
 _openai_client: Any
 _twitter_v1, _twitter_v2, _openai_client = _build_clients()
 
-# Cache username → numeric Twitter user ID (avoids repeated lookups per session)
-_reply_user_id_cache: dict[str, str] = {}
-
 # ── Persistent state ───────────────────────────────────────────────────────────
 
 def _load_state() -> dict:
@@ -278,14 +234,10 @@ def _save_state(state: dict) -> None:
 
 # In-memory state; hydrated from disk at startup.
 # Schema: {
-#   "replied": {"username": {"tweet_id": str, "ts": float}},
 #   "fear_greed_last_date": str,    # "YYYY-MM-DD"
 #   "top_movers_last_date": str,    # "YYYY-MM-DD"
-#   "onchain_last_ts": float,
-#   "thread_last_ts": float,
 # }
 _state: dict = _load_state()
-_state.setdefault("replied", {})
 _state.setdefault("fear_greed_last_date", "")
 _state.setdefault("top_movers_last_date", "")
 _state.setdefault("onchain_last_ts", 0.0)
@@ -348,29 +300,6 @@ def _post_thread(tweets: list[str]) -> bool:
     return success == len(tweets)
 
 
-def _reply_v1(tweet_id: str, reply_text: str, username: str) -> bool:
-    """Post a reply to tweet_id via v1.1 API. Returns True on success."""
-    if _twitter_v1 is None:
-        return False
-    try:
-        _twitter_v1.update_status(
-            status=reply_text[:280],
-            in_reply_to_status_id=tweet_id,
-            auto_populate_reply_metadata=True,
-        )
-        logger.info(
-            "twitter_engagement: replied to @%s tweet %s — %r",
-            username, tweet_id, reply_text[:60],
-        )
-        return True
-    except Exception as exc:
-        logger.warning(
-            "twitter_engagement: v1.1 reply to @%s tweet %s failed: %s",
-            username, tweet_id, exc,
-        )
-        return False
-
-
 def _safe_get(url: str, params: dict | None = None) -> dict | list | None:
     """GET request with timeout; returns parsed JSON or None."""
     try:
@@ -382,177 +311,7 @@ def _safe_get(url: str, params: dict | None = None) -> dict | list | None:
         return None
 
 
-# ── Feature 1: Reply Monitor ────────────────────────────────────────────────────
-
-async def _reply_monitor() -> None:
-    """
-    Every 60 minutes: ONE reply posted across TARGET_ACCOUNTS.
-
-    Logic per cycle:
-      1. Shuffle accounts for variety.
-      2. Collect eligible accounts (not in 6h cooldown).
-      3. Priority: pick the first eligible account that has a tweet from the last 60 min.
-      4. Fallback: if none tweeted recently, pick the first eligible account
-         and reply to their latest tweet (any age, skip if already replied).
-      5. Post exactly 1 reply and stop. Never skip a cycle silently.
-
-    Requirements: Twitter app must have READ permission (not Write-only).
-    """
-    await asyncio.sleep(300)  # 5 min startup grace — let other systems settle
-    logger.info("twitter_engagement: reply_monitor started — %d accounts, 60-min cycle.", len(TARGET_ACCOUNTS))
-
-    while True:
-        if _twitter_v2 is not None:
-            loop = asyncio.get_running_loop()
-            try:
-                await loop.run_in_executor(None, _do_reply_round)
-            except Exception as exc:
-                logger.warning("twitter_engagement: reply_monitor cycle error: %s", exc)
-
-        logger.info("twitter_engagement: reply_monitor cycle done — sleeping 60 min.")
-        await asyncio.sleep(REPLY_POLL_INTERVAL_S)
-
-
-def _resolve_user_id(username: str) -> str | None:
-    """Return cached numeric user ID for username, or None on failure."""
-    if username in _reply_user_id_cache:
-        return _reply_user_id_cache[username]
-    try:
-        resp = _twitter_v2.get_user(username=username, user_auth=True)
-        if resp and resp.data:
-            uid = str(resp.data.id)
-            _reply_user_id_cache[username] = uid
-            return uid
-        logger.warning("twitter_engagement: could not resolve @%s (empty response)", username)
-    except Exception as exc:
-        err = str(exc)
-        if "453" in err or "403" in err:
-            logger.warning(
-                "twitter_engagement: READ DENIED resolving @%s — set READ permission at "
-                "developer.twitter.com → Apps → [app] → User auth settings.", username
-            )
-        else:
-            logger.warning("twitter_engagement: could not resolve @%s: %s", username, exc)
-    return None
-
-
-def _fetch_latest_tweet(user_id: str, username: str):
-    """Fetch up to 10 recent original tweets via v2. Returns list or None."""
-    try:
-        resp = _twitter_v2.get_users_tweets(
-            id=user_id,
-            max_results=10,
-            exclude=["retweets", "replies"],
-            tweet_fields=["created_at", "text"],
-            user_auth=True,
-        )
-        return resp.data if (resp and resp.data) else []
-    except Exception as exc:
-        err = str(exc)
-        if "453" in err or "403" in err:
-            logger.warning(
-                "twitter_engagement: READ DENIED fetching @%s timeline — check app permissions.",
-                username,
-            )
-        else:
-            logger.warning("twitter_engagement: get_users_tweets @%s failed: %s", username, exc)
-        return None
-
-
-def _do_reply_round() -> None:
-    """
-    Synchronous: one full reply cycle.
-    Picks ONE eligible account, finds a tweet to reply to, posts the reply.
-    """
-    import random
-
-    now = time.time()
-    cooldown_s = REPLY_COOLDOWN_H * 3600
-    recent_window_s = 3600  # "recent" = posted within the last 60 min
-
-    # ── Build candidate list (shuffle for variety) ──────────────────────────
-    candidates = list(TARGET_ACCOUNTS)
-    random.shuffle(candidates)
-
-    eligible: list[str] = [
-        u for u in candidates
-        if now - _state["replied"].get(u, {}).get("ts", 0.0) >= cooldown_s
-    ]
-
-    if not eligible:
-        logger.info(
-            "twitter_engagement: all %d accounts in %dh cooldown — skipping cycle.",
-            len(TARGET_ACCOUNTS), REPLY_COOLDOWN_H,
-        )
-        return
-
-    # ── Pass 1: look for a tweet posted within the last 60 min ──────────────
-    for username in eligible:
-        uid = _resolve_user_id(username)
-        if not uid:
-            continue
-        tweets = _fetch_latest_tweet(uid, username)
-        if tweets is None:
-            continue   # API error for this account — try next
-        for tw in tweets:
-            created_at = getattr(tw, "created_at", None)
-            if created_at and (now - created_at.timestamp()) <= recent_window_s:
-                tid = str(tw.id)
-                if tid == _state["replied"].get(username, {}).get("tweet_id", ""):
-                    continue  # already replied
-                if _attempt_reply(username, tw):
-                    return    # done for this cycle
-
-    # ── Pass 2 (fallback): reply to latest tweet from any eligible account ───
-    logger.info(
-        "twitter_engagement: no recent tweets found — falling back to latest available tweet."
-    )
-    for username in eligible:
-        uid = _resolve_user_id(username)
-        if not uid:
-            continue
-        tweets = _fetch_latest_tweet(uid, username)
-        if not tweets:
-            continue
-        for tw in tweets:
-            tid = str(tw.id)
-            if tid == _state["replied"].get(username, {}).get("tweet_id", ""):
-                continue  # already replied to this one
-            if _attempt_reply(username, tw):
-                return
-
-    logger.info("twitter_engagement: no replyable tweet found across all eligible accounts this cycle.")
-
-
-def _attempt_reply(username: str, tw: Any) -> bool:
-    """
-    Generate AI reply and post it. Returns True on success.
-    """
-    tweet_text = getattr(tw, "text", "") or ""
-    clean = re.sub(r"https?://\S+", "", tweet_text).strip()
-    clean = re.sub(r"@\S+", "", clean).strip()
-
-    if len(clean) < 15:
-        logger.debug("twitter_engagement: @%s tweet too short to reply — skipping.", username)
-        return False
-
-    prompt = _REPLY_PROMPT_TMPL.format(username=username, tweet_text=clean[:400])
-    reply_text = _gpt(prompt, max_tokens=100, temperature=0.8)
-
-    if not reply_text or len(reply_text) < 10:
-        logger.warning("twitter_engagement: GPT returned empty reply for @%s.", username)
-        return False
-
-    reply_text = re.sub(r"@\S+", "", reply_text).strip()[:275]
-
-    success = _reply_v1(str(tw.id), reply_text, username)
-    if success:
-        _state["replied"][username] = {"tweet_id": str(tw.id), "ts": time.time()}
-        _save_state(_state)
-    return success
-
-
-# ── Feature 2: Fear & Greed Index ─────────────────────────────────────────────
+# ── Feature 1: Fear & Greed Index ─────────────────────────────────────────────
 
 async def _fear_and_greed_loop() -> None:
     """Once daily at UTC 15:00: fetch Fear & Greed Index, generate AI commentary, tweet."""
@@ -947,11 +706,8 @@ async def _run_engagement() -> None:
     """Launches all engagement feature coroutines as concurrent asyncio tasks."""
     logger.info("twitter_engagement: starting all engagement tasks…")
     tasks = [
-        asyncio.create_task(_reply_monitor(),            name="reply_monitor"),
-        asyncio.create_task(_fear_and_greed_loop(),      name="fear_and_greed"),
-        asyncio.create_task(_top_movers_loop(),          name="top_movers"),
-        asyncio.create_task(_onchain_detective_loop(),   name="onchain_detective"),
-        asyncio.create_task(_thread_storytelling_loop(), name="thread_storytelling"),
+        asyncio.create_task(_fear_and_greed_loop(), name="fear_and_greed"),
+        asyncio.create_task(_top_movers_loop(),     name="top_movers"),
     ]
     # Run forever; individual task exceptions are caught inside each coroutine.
     await asyncio.gather(*tasks, return_exceptions=True)

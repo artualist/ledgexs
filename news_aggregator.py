@@ -117,8 +117,8 @@ AI_COMBINED_PROMPT = (
     "     a) <b>🚨 JUST IN:</b> — for new, timely developments and unexpected announcements\n"
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
-    "2. LENGTH: MAXIMUM 1-2 sentences summarising the news (NOT TOO LONG).\n"
-    "3. AI INSIGHT: MAXIMUM ONLY ! sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
+    "2. LENGTH: MAXIMUM 1 or 2 sentences summarising the news (SHORTLY, NOT TOO LONG).\n"
+    "3. AI INSIGHT: MAXIMUM ONLY 1 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "4. DATA INTEGRITY: Keep all numbers, prices, and percentages IDENTICAL to the source.\n"
     "5. CLEANING: Remove ALL URLs and source citations.\n\n"
 
@@ -917,8 +917,11 @@ async def _handle_news(
         # Blocking HTTP calls offloaded to thread pool so event loop stays free
         await loop.run_in_executor(None, _post_to_telegram, clean_tg_text, media_paths)
 
-        # Twitter: post both media and text-only news.
-        await loop.run_in_executor(None, _post_to_twitter, rewritten, media_paths)
+        # Twitter: post news headline only — strip AI insight paragraph.
+        # The rewritten text is structured as "<b>JUST IN:</b> …\n\nAI insight."
+        # Split on the first blank line so only the news part goes to Twitter.
+        twitter_text = rewritten.split("\n\n")[0].strip()
+        await loop.run_in_executor(None, _post_to_twitter, twitter_text, media_paths)
 
     finally:
         _cleanup_media_dir()

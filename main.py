@@ -640,6 +640,69 @@ def _classify_transfer(chain_id: str, sender: str, receiver: str) -> str:
     return "📦 COLD WALLET TRANSFER"
 
 
+# ── Tx-level DEX detection (Uniswap V3 pool fix) ─────────────────────────────
+# Problem: Uniswap V3 buys show Transfer(from=pool, to=buyer).  Pool address is
+# NOT in DEX_ROUTERS, so _classify_transfer() returns COLD WALLET TRANSFER and
+# the event is silently skipped.  Fix: one extra eth_getTransactionByHash call
+# to read tx.to (which IS the router), then classify from there.
+# Results are cached to avoid duplicate lookups within the same poll cycle.
+
+_tx_to_cache: dict[str, str] = {}   # tx_hash → tx.to (lowercase)
+_tx_cache_lock = threading.Lock()
+
+
+def _classify_via_tx(
+    chain_id: str,
+    tx_hash: str,
+    sender: str,
+    receiver: str,
+    w3: Any,
+) -> str:
+    """Deeper DEX detection: fetch tx.to and check against DEX_ROUTERS.
+
+    Only called when _classify_transfer() returned COLD WALLET TRANSFER.
+    Returns a refined label or falls back to COLD WALLET TRANSFER.
+    """
+    with _tx_cache_lock:
+        cached = _tx_to_cache.get(tx_hash)
+
+    if cached is None:
+        try:
+            tx = w3.eth.get_transaction(tx_hash)
+            cached = (tx.get("to") or "").lower()
+        except Exception:
+            cached = ""
+        with _tx_cache_lock:
+            _tx_to_cache[tx_hash] = cached
+            # Keep cache small — evict oldest when over 2 000 entries
+            if len(_tx_to_cache) > 2000:
+                oldest = next(iter(_tx_to_cache))
+                del _tx_to_cache[oldest]
+
+    if not cached:
+        return "📦 COLD WALLET TRANSFER"
+
+    routers_lc = {str(r).lower() for r in cat.DEX_ROUTERS.get(chain_id, set())}
+    if cached not in routers_lc:
+        return "📦 COLD WALLET TRANSFER"
+
+    # tx.to IS a known router → this is a DEX swap.
+    # Direction: if the tracked token's Transfer shows tokens going TO the receiver
+    # from some contract (pool), the receiver is the buyer (BUY).
+    # If the tracked token's Transfer shows tokens going FROM the sender to some
+    # contract (pool), the sender is selling (SELL).
+    sender_lc   = sender.lower()
+    receiver_lc = receiver.lower()
+    cex_wallets_lc = {
+        str(k).lower(): v for k, v in getattr(cat, "CEX_WALLETS", {}).items()
+    }
+    # The initiating EOA (tx.from_) is the trader; identify via exclusion.
+    # If sender is NOT a known CEX and is not the router → likely the seller.
+    if sender_lc not in routers_lc and sender_lc not in cex_wallets_lc:
+        return "🚨 WHALE SELL"   # sender = EOA selling token into pool
+    return "🔥 WHALE BUY"        # receiver = EOA buying token from pool
+
+
 # ── RPC resilience: uniform retry with exponential backoff ──────────────────
 
 
@@ -1945,38 +2008,55 @@ def _check_whale_activity(
         tx_hash = event["transactionHash"].hex()
         block = event["blockNumber"]
 
-        # ── Pre-classify once per event (before per-user loop) ───────────────
-        # Only CEX deposits/withdrawals and DEX swaps are meaningful.
-        # Plain cold-wallet transfers (📦) are silently skipped — they generate
-        # noise and waste processing without actionable signal.
+        # ── Step 1: Quick classification ──────────────────────────────────────
         event_type = _classify_transfer(str(chain_id), str(sender), str(receiver))
-        if event_type == "📦 COLD WALLET TRANSFER":
-            continue
 
-        # ── Global intelligence pass (runs once per event, not per user) ─────
-        # NOTE: NO intelligence alerts are ever posted to the public channel.
-        # @Ledgexs is reserved for news only. All whale/CEX/accumulation alerts
-        # go exclusively as DMs to subscribed users.
+        # ── Step 2: Deep DEX detection for V3 pool transfers ─────────────────
+        # Uniswap V3 buys: Transfer(from=pool, to=buyer) — pool not in router list.
+        # One extra eth_getTransactionByHash call confirms whether tx.to is a router.
+        # Only triggered for COLD WALLET events above a meaningful USD floor.
+        if event_type == "📦 COLD WALLET TRANSFER" and amount_usd >= 50_000:
+            event_type = _classify_via_tx(
+                str(chain_id), tx_hash, str(sender), str(receiver), w3
+            )
 
-        if price_usd > 0:
-            # DCA Accumulation — track sub-threshold buys from the sending wallet
+        # ── Step 3: Global intelligence — runs ONCE per event (not per user) ─
+        # All accumulation / coordination alerts go as DMs only, never to the
+        # public channel.  CEX and DEX events feed the accumulation tracker.
+
+        is_buy  = "BUY"  in event_type
+        is_sell = "SELL" in event_type
+        is_cex_out = "WITHDRAWAL" in event_type  # CEX → wallet (accumulation)
+
+        if price_usd > 0 and (is_buy or is_cex_out):
+            # The RECEIVER is accumulating tokens (bought or withdrew from CEX).
+            accum_wallet = str(receiver)
             if whale_intel.ACCUM_MIN_USD <= amount_usd <= whale_intel.ACCUM_MAX_USD:
                 whale_intel.accum_tracker.record(
-                    chain_id, ca, str(sender), amount, amount_usd, symbol
+                    chain_id, ca, accum_wallet, amount, amount_usd, symbol, tx_hash
                 )
+                whale_intel.coord_tracker.record(
+                    chain_id, ca, accum_wallet, amount_usd
+                )
+
+                # ── Single-wallet accumulation alert ─────────────────────────
                 trigger = whale_intel.accum_tracker.check_trigger(
-                    chain_id, ca, str(sender)
+                    chain_id, ca, accum_wallet
                 )
                 if trigger:
+                    whale_intel._register_smart_money(accum_wallet)
                     accum_text = whale_intel.format_accum_alert(
-                        str(sender),
+                        accum_wallet,
                         trigger["total_amount"],
                         symbol,
                         trigger["total_usd"],
                         trigger["tx_count"],
                         clabel,
+                        explorer=exp,
+                        latest_tx=trigger.get("latest_tx", ""),
+                        first_ts=trigger.get("first_ts", 0.0),
+                        price_usd=price_usd,
                     )
-                    # DM every subscriber of this token — never post to public channel
                     for _uid in uids:
                         try:
                             _rec = db.get_user(_uid)
@@ -1989,7 +2069,33 @@ def _check_whale_activity(
                         except Exception:
                             pass
 
-        # ── Per-user alerts (threshold-filtered, existing logic) ──────────────
+                # ── Coordinated accumulation alert ────────────────────────────
+                coord_sig = whale_intel.coord_tracker.check_signal(chain_id, ca)
+                if coord_sig:
+                    coord_text = whale_intel.format_coord_alert(
+                        symbol,
+                        clabel,
+                        coord_sig["wallet_count"],
+                        coord_sig["total_usd"],
+                        coord_sig["elapsed_s"],
+                    )
+                    for _uid in uids:
+                        try:
+                            _rec = db.get_user(_uid)
+                            if _rec:
+                                bot.send_message(
+                                    _rec["chat_id"],
+                                    coord_text,
+                                    disable_web_page_preview=True,
+                                )
+                        except Exception:
+                            pass
+
+        # ── Step 4: Skip per-user alerts for cold wallet transfers ────────────
+        if event_type == "📦 COLD WALLET TRANSFER":
+            continue
+
+        # ── Step 5: Per-user threshold alerts ────────────────────────────────
 
         for uid in uids:
             try:
@@ -2008,7 +2114,6 @@ def _check_whale_activity(
                     if amount < threshold_usd:
                         continue
 
-                # Use the pre-classified event type (already filtered above).
                 # Premium users see the full label; free users see a generic one.
                 if premium:
                     alert_type = event_type
@@ -2017,24 +2122,27 @@ def _check_whale_activity(
 
                 usd_str = f"${amount_usd:,.0f}" if price_usd > 0 else "price unknown"
 
-                # Smart Money: resolve labels for sender/receiver
+                # Resolve wallet labels (smart-money tag for known accumulators)
                 sender_lbl = db.get_label_for_address(uid, sender)
                 receiver_lbl = db.get_label_for_address(uid, receiver)
-                sender_disp = (
-                    f"<b>{sender_lbl}</b> (<code>{_shorten(sender)}</code>)"
-                    if sender_lbl
-                    else f"<code>{sender}</code>"
-                )
-                receiver_disp = (
-                    f"<b>{receiver_lbl}</b> (<code>{_shorten(receiver)}</code>)"
-                    if receiver_lbl
-                    else f"<code>{receiver}</code>"
-                )
 
+                def _fmt_wallet(addr: str, lbl: str | None, is_recv: bool) -> str:
+                    sm = " 🧠" if whale_intel.is_smart_money(addr) else ""
+                    lnk = f"<a href='{exp}/address/{addr}'><code>{addr}</code></a>"
+                    if lbl:
+                        return f"<b>{lbl}</b>{sm} ({lnk})"
+                    return f"{lnk}{sm}"
+
+                sender_disp   = _fmt_wallet(sender,   sender_lbl,   False)
+                receiver_disp = _fmt_wallet(receiver, receiver_lbl, True)
+
+                price_line = (
+                    f"\n<b>Price:</b> ~${price_usd:,.4f}/{symbol}" if price_usd > 0 else ""
+                )
                 alert_text = (
                     f"{alert_type} — <b>{name} ({symbol})</b>\n"
-                    f"<b>Chain:</b> {clabel}\n\n"
-                    f"<b>Amount:</b> {amount:,.2f} {symbol}"
+                    f"<b>Chain:</b> {clabel}{price_line}\n\n"
+                    f"<b>Amount:</b> {amount:,.4f} {symbol}"
                     + (f"  (~{usd_str})" if price_usd > 0 else "")
                     + "\n"
                     f"<b>From:</b> {sender_disp}\n"

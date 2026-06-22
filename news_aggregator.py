@@ -48,7 +48,6 @@ SOURCE_CHANNELS: list[str] = [
     "@watcherguru",
     "@coinmuhendisihaber",
     "@news_crypto",
-    "@jrkripto",
     # Only add channels here whose posts you WANT published to @Ledgexs.
 ]
 

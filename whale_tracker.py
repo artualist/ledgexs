@@ -87,29 +87,31 @@ NEWS_SIG = (
 # ── USD thresholds (per symbol) ───────────────────────────────────────────────
 
 THRESHOLDS: dict[str, float] = {
-    # Tier 1 — $10 M
-    "WBTC":  100_000_000,
-    "WETH":  100_000_000,
-    "ETH":   100_000_000,
-    "BTC":   100_000_000,
-    "USDT":  100_000_000,
-    "USDC":  100_000_000,
-    "FDUSD": 100_000_000,
-    # Tier 2 — $5 M
-    "SOL":   50_000_000,
-    "WSOL":  50_000_000,
-    "BNB":   50_000_000,
-    "WBNB":  50_000_000,
-    # Tier 3 — $1 M
-    "XRP":    10_000_000,
-    "ADA":    10_000_000,
-    "XLM":    10_000_000,
-    "DOGE":   10_000_000,
+    # Tier 1 — $10 M: high-volume / stablecoin / wrapped assets
+    "BTC":    10_000_000,
+    "WBTC":   10_000_000,
+    "ETH":    10_000_000,
+    "WETH":   10_000_000,
+    "USDT":   10_000_000,
+    "USDC":   10_000_000,
+    "FDUSD":  10_000_000,
+    "SOL":    10_000_000,
+    "WSOL":   10_000_000,
+    "BNB":    10_000_000,
+    "WBNB":   10_000_000,
     "ZEC":    10_000_000,
-    "XMR":    10_000_000,
-    "LINK":   10_000_000,
-    "HYPE":   10_000_000,
+    "AVAX":   10_000_000,
+    # Tier 2 — $1 M: everything else falls through to the default below
+    "XRP":    1_000_000,
+    "ADA":    1_000_000,
+    "XLM":    1_000_000,
+    "DOGE":   1_000_000,
+    "XMR":    1_000_000,
+    "LINK":   1_000_000,
+    "HYPE":   1_000_000,
 }
+# Default for any symbol not listed above
+_DEFAULT_THRESHOLD: float = 1_000_000
 
 # ── EVM token configs ─────────────────────────────────────────────────────────
 # Only tokens with widely-used ERC-20 / BEP-20 representations are listed.
@@ -300,7 +302,7 @@ def _get_price(symbol: str) -> float:
 
 def filter_whale_tx(amount_usd: float, symbol: str) -> bool:
     """Return True if the USD notional meets this symbol's whale threshold."""
-    threshold = THRESHOLDS.get(symbol.upper(), THRESHOLDS.get("LINK", 5_000_000))
+    threshold = THRESHOLDS.get(symbol.upper(), _DEFAULT_THRESHOLD)
     return amount_usd >= threshold
 
 # ── Wallet identity lookup ────────────────────────────────────────────────────

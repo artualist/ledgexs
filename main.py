@@ -364,21 +364,25 @@ TRON_RPC_URL: str = os.environ.get("TRON_RPC_URL", "")
 # Web3 instances
 # ---------------------------------------------------------------------------
 
+# Free public RPC endpoints — no API key, no credit limits.
+# Alchemy / other paid RPC env vars are intentionally ignored for EVM chains.
+_FREE_RPC_URLS: dict[str, str] = {
+    "eth": "https://ethereum.publicnode.com",
+    "bsc": "https://bsc-dataseed.binance.org/",
+}
+
 w3_instances: dict[str, Web3] = {}
 for _cid, _cmeta in CHAINS.items():
     if not _cmeta["rpc_env"]:  # non-EVM / dedicated-monitor chain — skip Web3
         continue
-    # ETH accepts both the new ETH_RPC_URL and the legacy RPC_URL secret name
-    if _cid == "eth":
-        _url = os.environ.get("ETH_RPC_URL", "") or os.environ.get("RPC_URL", "")
-    else:
-        _url = os.environ.get(_cmeta["rpc_env"], "")
+    _url = _FREE_RPC_URLS.get(_cid, "")
     if _url:
         w3_instances[_cid] = Web3(
             Web3.HTTPProvider(_url, request_kwargs={"timeout": 15})
         )
+        logger.debug("%-8s RPC → %s (free public)", _cid, _url)
     else:
-        logger.debug("%-8s No RPC URL set (%s) — chain disabled.", _cid, _cmeta["rpc_env"])
+        logger.debug("%-8s No free RPC defined — chain disabled.", _cid)
 
 # Solana connectivity flag — set True by _sol_monitor_loop after health-check
 _sol_connected: bool = False
@@ -462,28 +466,67 @@ STABLECOINS = {
 }
 
 
-def get_price_usd(symbol: str) -> float:
+def get_price_usd(symbol: str, chain_id: str = "", ca: str = "") -> float:
+    """Return USD price for *symbol*.
+
+    Resolution order:
+    1. Stablecoin shortcut → 1.0
+    2. In-memory cache (TTL = PRICE_TTL)
+    3. CoinGecko (if symbol is in catalog's COINGECKO_IDS)
+    4. DexScreener by contract address (free, no key — catches any token)
+    """
     if symbol.upper() in STABLECOINS:
         return 1.0
-    cg_id = cat.COINGECKO_IDS.get(symbol)
-    if not cg_id:
-        return 0.0
+
+    cache_key = ca.lower() if ca else symbol
     with _price_lock:
-        cached = _price_cache.get(cg_id)
+        cached = _price_cache.get(cache_key)
         if cached and time.time() - cached[1] < PRICE_TTL:
             return cached[0]
-    try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price",
-            params={"ids": cg_id, "vs_currencies": "usd"},
-            timeout=6,
-        )
-        price = float(r.json().get(cg_id, {}).get("usd", 0))
-        with _price_lock:
-            _price_cache[cg_id] = (price, time.time())
-        return price
-    except Exception:
-        return 0.0
+
+    # ── 1. CoinGecko (known tokens) ──────────────────────────────────────────
+    cg_id = cat.COINGECKO_IDS.get(symbol)
+    if cg_id:
+        try:
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/simple/price",
+                params={"ids": cg_id, "vs_currencies": "usd"},
+                timeout=6,
+            )
+            price = float(r.json().get(cg_id, {}).get("usd", 0))
+            if price > 0:
+                with _price_lock:
+                    _price_cache[cache_key] = (price, time.time())
+                return price
+        except Exception:
+            pass
+
+    # ── 2. DexScreener fallback (works for any EVM/Solana/Tron token by CA) ──
+    if ca:
+        try:
+            data = requests.get(
+                f"https://api.dexscreener.com/latest/dex/tokens/{ca}",
+                timeout=6,
+            ).json()
+            pairs = data.get("pairs") or []
+            # Pick the pair with highest liquidity for a reliable price
+            pairs_with_price = [
+                p for p in pairs if p.get("priceUsd")
+            ]
+            if pairs_with_price:
+                best = max(
+                    pairs_with_price,
+                    key=lambda p: float(p.get("liquidity", {}).get("usd", 0) or 0),
+                )
+                price = float(best["priceUsd"])
+                if price > 0:
+                    with _price_lock:
+                        _price_cache[cache_key] = (price, time.time())
+                    return price
+        except Exception:
+            pass
+
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1890,7 +1933,7 @@ def _check_whale_activity(
         logger.debug("get_logs %s: %s", key, exc)
         return
 
-    price_usd = get_price_usd(symbol)
+    price_usd = get_price_usd(symbol, chain_id=chain_id, ca=ca)
     exp = _explorer(chain_id)
     clabel = _chain_label(chain_id)
 

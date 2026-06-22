@@ -1,22 +1,24 @@
 """
-bot/whale_intel.py
-==================
-Advanced on-chain intelligence module.
+whale_intel.py
+==============
+Advanced on-chain intelligence for @LedgexsBot
 
-Provides two independently testable capabilities that are imported and used
-inside `_check_whale_activity()` in main.py:
+1. Smart Accumulation Tracker
+   - Thread-safe 24-hour rolling window per (chain, token, wallet).
+   - Only records BUY-direction transfers ≥$5 K per tx.
+   - Fires ONE alert when cumulative USD ≥$100 K across ≥3 transactions.
+   - Alert: full wallet address + explorer link, latest tx link, no footer.
 
-1. CEX Inflow / Outflow Formatting
-   - `parse_cex_direction(alert_type)` — extracts (direction, cex_name) from the
-     label already produced by `_classify_transfer()`.
-   - `format_cex_alert(...)` — returns a ready-to-send Telegram HTML string for
-     WALLET→CEX inflows (potential sell-off) and CEX→WALLET outflows (accumulation).
+2. Coordinated Accumulation Detector
+   - Fires a HIGH PRIORITY signal when ≥2 distinct wallets accumulate
+     the same token within 4 hours with ≥$500 K combined volume.
 
-2. DCA / Smart Accumulation Tracker
-   - Thread-safe rolling 12-hour window per (chain, token, wallet) tuple.
-   - Records sub-threshold transfers ($500–$10k each) and fires one alert when
-     cumulative USD ≥ $20,000 across ≥ 5 transactions.
-   - `accum_tracker` is a module-level singleton imported by main.py.
+3. Wallet Reputation
+   - Tracks wallets that have previously triggered an accumulation alert.
+   - Marks repeat accumulators as "Smart Money" for a stronger signal.
+
+4. CEX Flow Formatter
+   - Formats CEX deposit / withdrawal alerts.
 """
 
 from __future__ import annotations
@@ -28,25 +30,62 @@ from typing import Any
 
 logger = logging.getLogger("whale_bot.intel")
 
-# ── Accumulation Tracker constants ────────────────────────────────────────────
-ACCUM_WINDOW_S   = 12 * 3600   # 12-hour rolling window
-ACCUM_USD_THRESH = 20_000.0    # cumulative USD threshold to fire an alert
-ACCUM_TX_THRESH  = 5           # minimum number of separate transactions
-ACCUM_MIN_USD    = 500.0       # per-tx minimum (noise filter)
-ACCUM_MAX_USD    = 10_000.0    # per-tx ceiling  (above this = normal whale alert)
+# ── Accumulation tracker constants ────────────────────────────────────────────
+ACCUM_WINDOW_S    = 24 * 3600   # 24-hour rolling window (was 12 h)
+ACCUM_USD_THRESH  = 100_000.0   # cumulative USD to fire alert (was $20 K)
+ACCUM_TX_THRESH   = 3           # minimum distinct transactions (was 5)
+ACCUM_MIN_USD     = 5_000.0     # per-tx minimum — noise filter (was $500)
+ACCUM_MAX_USD     = 95_000.0    # per-tx ceiling (above = direct whale alert)
+
+# ── Coordinated accumulation constants ────────────────────────────────────────
+COORD_WINDOW_S    = 4 * 3600    # 4-hour window
+COORD_USD_THRESH  = 500_000.0   # $500 K combined volume to signal
+COORD_WALLET_MIN  = 2           # at least 2 distinct wallets
+
+# ── Wallet reputation ─────────────────────────────────────────────────────────
+_smart_money_wallets: set[str] = set()   # wallet.lower() → previously alerted
+_sm_lock = threading.Lock()
 
 
-# ── Address shortener (mirrors _shorten in main.py — no circular import) ─────
+def _register_smart_money(wallet: str) -> None:
+    with _sm_lock:
+        _smart_money_wallets.add(wallet.lower())
+
+
+def is_smart_money(wallet: str) -> bool:
+    with _sm_lock:
+        return wallet.lower() in _smart_money_wallets
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 def _short(addr: str) -> str:
     return f"{addr[:6]}…{addr[-4:]}" if len(addr) > 10 else addr
 
 
+def _wallet_link(wallet: str, explorer: str) -> str:
+    """Full wallet address as a clickable HTML link."""
+    return f"<a href='{explorer}/address/{wallet}'><code>{wallet}</code></a>"
+
+
+def _tx_link(tx_hash: str, explorer: str) -> str:
+    return f"<a href='{explorer}/tx/{tx_hash}'>{_short(tx_hash)}</a>"
+
+
+def _elapsed(seconds: float) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Part 1 — CEX Flow Detection
+# 1 — CEX Flow Detection
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_cex_direction(alert_type: str) -> tuple[str, str] | None:
-    """Parse an alert_type string from _classify_transfer() into (direction, cex_name).
+    """Parse alert_type from _classify_transfer() → (direction, cex_name).
 
     Returns:
         ("INFLOW",  cex_name)  — wallet → CEX (potential sell-off)
@@ -54,22 +93,17 @@ def parse_cex_direction(alert_type: str) -> tuple[str, str] | None:
         None                   — not a CEX transfer
     """
     if "CEX DEPOSIT" in alert_type:
-        # e.g. "🏛️ CEX DEPOSIT → Binance"
         parts = alert_type.split("→", 1)
         cex_name = parts[-1].strip() if len(parts) > 1 else "Unknown CEX"
         return "INFLOW", cex_name
-
     if "CEX WITHDRAWAL" in alert_type:
-        # e.g. "🏦 CEX WITHDRAWAL ← OKX"
         parts = alert_type.split("←", 1)
         cex_name = parts[-1].strip() if len(parts) > 1 else "Unknown CEX"
         return "OUTFLOW", cex_name
-
     if "CEX CONSOLIDATION" in alert_type:
         parts = alert_type.split("CEX CONSOLIDATION", 1)
         cex_name = parts[-1].strip() if len(parts) > 1 else "CEX"
         return "INFLOW", cex_name
-
     return None
 
 
@@ -82,36 +116,34 @@ def format_cex_alert(
     tx_hash: str,
     explorer: str,
     chain_label: str,
+    wallet: str = "",
 ) -> str:
-    """Return a formatted CEX inflow/outflow alert for Telegram (HTML).
-
-    All content on one line after the bold header; @LedgexsBot footer appended.
-    """
-    usd_str  = f"~${amount_usd:,.0f}"
-    tx_link  = f"<a href='{explorer}/tx/{tx_hash}'>{_short(tx_hash)}</a>"
+    """Formatted CEX inflow/outflow alert for Telegram (HTML)."""
+    usd_str   = f"~${amount_usd:,.0f}"
+    tx_lnk    = _tx_link(tx_hash, explorer)
+    w_display = _wallet_link(wallet, explorer) if wallet else ""
 
     if direction == "INFLOW":
-        header = "🚨 <b>WALLET-TO-CEX INFLOW (Potential Sell-Off):</b>"
+        header = "🚨 <b>WALLET → CEX (Potential Sell-Off)</b>"
         body   = (
-            f"Whale moved <b>{amount:,.2f} ${symbol}</b> ({usd_str}) "
+            f"Whale moved <b>{amount:,.4f} {symbol}</b> ({usd_str}) "
             f"to <b>{cex_name}</b>."
         )
-    else:  # OUTFLOW
-        header = "🐋 <b>CEX-TO-WALLET OUTFLOW (Accumulation):</b>"
+    else:
+        header = "🐋 <b>CEX → WALLET (Accumulation)</b>"
         body   = (
-            f"Whale withdrew <b>{amount:,.2f} ${symbol}</b> ({usd_str}) "
+            f"Whale withdrew <b>{amount:,.4f} {symbol}</b> ({usd_str}) "
             f"from <b>{cex_name}</b> into a private wallet."
         )
 
-    return (
-        f"{header} {body}\n"
-        f"<b>Chain:</b> {chain_label}  |  <b>Tx:</b> {tx_link}\n\n"
-        f"@LedgexsBot"
-    )
+    parts = [f"{header}\n{body}", f"<b>Chain:</b> {chain_label}  |  <b>Tx:</b> {tx_lnk}"]
+    if w_display:
+        parts.append(f"<b>Wallet:</b> {w_display}")
+    return "\n".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Part 2 — DCA / Smart Accumulation Tracker
+# 2 — Smart Accumulation Tracker
 # ─────────────────────────────────────────────────────────────────────────────
 
 def format_accum_alert(
@@ -121,28 +153,43 @@ def format_accum_alert(
     total_usd: float,
     tx_count: int,
     chain_label: str,
+    explorer: str = "https://etherscan.io",
+    latest_tx: str = "",
+    first_ts: float = 0.0,
+    price_usd: float = 0.0,
 ) -> str:
-    """Return a formatted smart-accumulation alert for Telegram (HTML)."""
-    return (
-        f"👀 <b>SMART ACCUMULATION DETECTED:</b> Wallet "
-        f"<code>{_short(wallet)}</code> has quietly accumulated "
-        f"<b>{total_amount:,.4f} ${symbol}</b> "
-        f"(~${total_usd:,.0f}) on <b>{chain_label}</b> "
-        f"over the last 12 hours via {tx_count} smaller transactions.\n\n"
-        f"@LedgexsBot"
-    )
+    """Full-detail accumulation alert — no @LedgexsBot footer."""
+    avg_usd   = total_usd / max(tx_count, 1)
+    price_str = f"  (@ ~${price_usd:,.4f}/{symbol})" if price_usd > 0 else ""
+    elapsed   = _elapsed(time.time() - first_ts) if first_ts else "24h"
+    sm_tag    = " 🧠 <b>Smart Money</b>" if is_smart_money(wallet) else ""
+
+    lines = [
+        f"👀 <b>SMART ACCUMULATION DETECTED</b>{sm_tag}",
+        f"<b>{symbol}</b> | {chain_label}",
+        "",
+        f"<b>Wallet:</b> {_wallet_link(wallet, explorer)}",
+        f"<b>Accumulated:</b> {total_amount:,.4f} {symbol} (~${total_usd:,.0f}){price_str}",
+        f"<b>Transactions:</b> {tx_count} buys  |  avg ~${avg_usd:,.0f}/tx",
+        f"<b>Time window:</b> last {elapsed}",
+    ]
+    if latest_tx:
+        lines.append(f"<b>Latest tx:</b> {_tx_link(latest_tx, explorer)}")
+
+    return "\n".join(lines)
 
 
 class AccumulationTracker:
-    """Thread-safe 12-hour rolling-window DCA accumulation tracker.
+    """Thread-safe 24-hour rolling-window DCA accumulation tracker.
 
     Key: "{chain}:{ca}:{wallet_lowercase}"
     Entry fields:
-        total_usd    — cumulative USD value of recorded transfers
+        total_usd    — cumulative USD value
         total_amount — cumulative token amount
-        tx_count     — number of distinct transactions recorded
-        first_ts     — Unix timestamp of the first transfer in the window
-        symbol       — token ticker (for formatting)
+        tx_count     — distinct transactions recorded
+        first_ts     — Unix timestamp of first transfer in window
+        latest_tx    — tx hash of the most recent recorded transfer
+        symbol       — token ticker
         alerted      — True once an alert has been fired (suppresses repeats)
     """
 
@@ -150,16 +197,12 @@ class AccumulationTracker:
         self._lock = threading.Lock()
         self._data: dict[str, dict[str, Any]] = {}
 
-    # ── private ───────────────────────────────────────────────────────────────
-
     @staticmethod
     def _key(chain: str, ca: str, wallet: str) -> str:
         return f"{chain}:{ca}:{wallet.lower()}"
 
     def _expired(self, entry: dict[str, Any]) -> bool:
         return time.time() - entry["first_ts"] > ACCUM_WINDOW_S
-
-    # ── public API ────────────────────────────────────────────────────────────
 
     def record(
         self,
@@ -169,11 +212,13 @@ class AccumulationTracker:
         amount: float,
         amount_usd: float,
         symbol: str,
+        tx_hash: str = "",
     ) -> None:
-        """Record one sub-threshold transfer.
+        """Record one BUY-direction transfer.
 
-        Silently ignores transfers below ACCUM_MIN_USD or above ACCUM_MAX_USD.
-        Resets the window if the previous window has expired or was already alerted.
+        Caller is responsible for only passing BUY events and for ensuring
+        amount_usd is within [ACCUM_MIN_USD, ACCUM_MAX_USD].
+        Resets window if the previous 24-hour period expired or was already alerted.
         """
         if not (ACCUM_MIN_USD <= amount_usd <= ACCUM_MAX_USD):
             return
@@ -183,9 +228,6 @@ class AccumulationTracker:
 
         with self._lock:
             entry = self._data.get(k)
-            # Only reset when the 12-hour window itself has expired.
-            # An alerted entry stays locked until the window expires so no
-            # second alert can fire within the same 12-hour period.
             if entry and self._expired(entry):
                 entry = None
 
@@ -195,6 +237,7 @@ class AccumulationTracker:
                     "total_amount": amount,
                     "tx_count":     1,
                     "first_ts":     now,
+                    "latest_tx":    tx_hash,
                     "symbol":       symbol,
                     "alerted":      False,
                 }
@@ -202,14 +245,14 @@ class AccumulationTracker:
                 entry["total_usd"]    += amount_usd
                 entry["total_amount"] += amount
                 entry["tx_count"]     += 1
+                entry["latest_tx"]     = tx_hash or entry["latest_tx"]
 
     def check_trigger(
         self, chain: str, ca: str, wallet: str
     ) -> dict[str, Any] | None:
-        """Return a copy of the accumulated data if both thresholds are met.
+        """Return accumulated data dict if both thresholds are met, else None.
 
-        Marks the entry as alerted immediately so the same accumulation is
-        never re-fired. Returns None if thresholds are not met or already fired.
+        Marks entry as alerted immediately — no repeat fires within same window.
         """
         k = self._key(chain, ca, wallet)
         with self._lock:
@@ -225,7 +268,6 @@ class AccumulationTracker:
         return None
 
     def purge_stale(self) -> None:
-        """Remove window-expired entries. Call occasionally to keep memory lean."""
         with self._lock:
             stale = [k for k, v in self._data.items() if self._expired(v)]
             for k in stale:
@@ -234,5 +276,79 @@ class AccumulationTracker:
             logger.debug("AccumulationTracker: purged %d stale entries.", len(stale))
 
 
-# ── Module-level singleton imported by main.py ───────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 3 — Coordinated Accumulation Detector
+# ─────────────────────────────────────────────────────────────────────────────
+
+def format_coord_alert(
+    symbol: str,
+    chain_label: str,
+    wallet_count: int,
+    total_usd: float,
+    elapsed_s: float,
+) -> str:
+    """HIGH PRIORITY coordinated buy alert."""
+    return (
+        f"🚨 <b>HIGH PRIORITY — COORDINATED ACCUMULATION</b>\n"
+        f"<b>{symbol}</b> | {chain_label}\n\n"
+        f"<b>{wallet_count}</b> distinct whale wallets have accumulated "
+        f"<b>~${total_usd:,.0f}</b> worth of {symbol} "
+        f"over the last {_elapsed(elapsed_s)}.\n\n"
+        f"⚡ This is a strong coordinated buy signal."
+    )
+
+
+class CoordAccumulationTracker:
+    """Detects coordinated accumulation: ≥2 wallets, ≥$500 K, within 4 hours."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # key: "{chain}:{ca}" → {"wallets": {wallet → total_usd}, "first_ts": float, "alerted": bool}
+        self._data: dict[str, dict[str, Any]] = {}
+
+    @staticmethod
+    def _key(chain: str, ca: str) -> str:
+        return f"{chain}:{ca}"
+
+    def _expired(self, entry: dict) -> bool:
+        return time.time() - entry["first_ts"] > COORD_WINDOW_S
+
+    def record(self, chain: str, ca: str, wallet: str, amount_usd: float) -> None:
+        k   = self._key(chain, ca)
+        now = time.time()
+        wl  = wallet.lower()
+        with self._lock:
+            entry = self._data.get(k)
+            if entry and (self._expired(entry) or entry.get("alerted")):
+                entry = None
+            if entry is None:
+                self._data[k] = {
+                    "wallets":  {wl: amount_usd},
+                    "first_ts": now,
+                    "alerted":  False,
+                }
+            else:
+                entry["wallets"][wl] = entry["wallets"].get(wl, 0.0) + amount_usd
+
+    def check_signal(self, chain: str, ca: str) -> dict[str, Any] | None:
+        """Return signal dict if coordinated buy thresholds are met, else None."""
+        k = self._key(chain, ca)
+        with self._lock:
+            entry = self._data.get(k)
+            if not entry or entry["alerted"] or self._expired(entry):
+                return None
+            total_usd    = sum(entry["wallets"].values())
+            wallet_count = len(entry["wallets"])
+            if wallet_count >= COORD_WALLET_MIN and total_usd >= COORD_USD_THRESH:
+                entry["alerted"] = True
+                return {
+                    "wallet_count": wallet_count,
+                    "total_usd":    total_usd,
+                    "elapsed_s":    time.time() - entry["first_ts"],
+                }
+        return None
+
+
+# ── Module-level singletons imported by main.py ───────────────────────────────
 accum_tracker = AccumulationTracker()
+coord_tracker = CoordAccumulationTracker()

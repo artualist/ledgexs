@@ -49,6 +49,7 @@ SOURCE_CHANNELS: list[str] = [
     "@watcherguru",
     "@coinmuhendisihaber",
     "@news_crypto",
+    "@jrkripto",
     # Only add channels here whose posts you WANT published to @Ledgexs.
 ]
 
@@ -592,74 +593,135 @@ async def _call_gpt_for_analysis(prompt: str) -> str:
 
 
 # ── Market analysis (periodic) ────────────────────────────────────────────────
+#
+# Data sources (in priority order, no API key needed):
+#   1. Binance REST  — api.binance.com  — 1 200 req/min, reliable price data
+#   2. CoinCap v2    — api.coincap.io   — 200 req/min, market cap + rankings
+#   CoinGecko free tier is intentionally AVOIDED (30 req/min → constant 429s).
+#
+# Binance USDT trading pairs (symbol → pair string)
+_BINANCE_PAIRS: dict[str, str] = {
+    "BTC": "BTCUSDT",  "ETH": "ETHUSDT",  "SOL": "SOLUSDT",
+    "BNB": "BNBUSDT",  "XRP": "XRPUSDT",  "ADA": "ADAUSDT",
+    "DOGE": "DOGEUSDT","AVAX": "AVAXUSDT", "LINK": "LINKUSDT",
+    "DOT": "DOTUSDT",  "MATIC": "MATICUSDT","UNI": "UNIUSDT",
+    "ATOM": "ATOMUSDT", "LTC": "LTCUSDT",  "TRX": "TRXUSDT",
+    "NEAR": "NEARUSDT","FTM": "FTMUSDT",   "ALGO": "ALGOUSDT",
+    "SUI": "SUIUSDT",  "APT": "APTUSDT",   "OP": "OPUSDT",
+    "ARB": "ARBUSDT",  "INJ": "INJUSDT",   "TIA": "TIAUSDT",
+    "SEI": "SEIUSDT",  "WIF": "WIFUSDT",   "BONK": "BONKUSDT",
+    "PEPE": "PEPEUSDT","TON": "TONUSDT",   "NOT": "NOTUSDT",
+    "FLOKI": "FLOKIUSDT","HYPE": "HYPEUSDT","PENGU": "PENGUUSDT",
+    "EIGEN": "EIGENUSDT","ENA": "ENAUSDT", "PENDLE": "PENDLEUSDT",
+}
 
-# CoinGecko slug map — used by _get_market_data to resolve symbol → API ID
-_CG_IDS: dict[str, str] = {
-    "BTC": "bitcoin",        "ETH": "ethereum",       "SOL": "solana",
-    "BNB": "binancecoin",    "XRP": "ripple",          "ADA": "cardano",
-    "DOGE": "dogecoin",      "AVAX": "avalanche-2",    "LINK": "chainlink",
-    "DOT": "polkadot",       "MATIC": "matic-network", "UNI": "uniswap",
-    "ATOM": "cosmos",        "LTC": "litecoin",        "TRX": "tron",
-    "NEAR": "near",          "FTM": "fantom",           "ALGO": "algorand",
-    "SUI": "sui",            "APT": "aptos",            "OP": "optimism",
-    "ARB": "arbitrum",       "INJ": "injective-protocol", "TIA": "celestia",
-    "SEI": "sei-network",    "PENGU": "pudgy-penguins", "HYPE": "hyperliquid",
-    "WIF": "dogwifcoin",     "BONK": "bonk",            "PEPE": "pepe",
-    "TON": "the-open-network", "NOT": "notcoin",        "FLOKI": "floki",
+# CoinCap asset IDs (symbol → coincap id) for coins not on Binance
+_COINCAP_IDS: dict[str, str] = {
+    "BTC": "bitcoin",    "ETH": "ethereum",   "SOL": "solana",
+    "BNB": "binance-coin","XRP": "xrp",        "ADA": "cardano",
+    "DOGE": "dogecoin",  "AVAX": "avalanche", "LINK": "chainlink",
+    "DOT": "polkadot",   "MATIC": "polygon",  "UNI": "uniswap",
+    "ATOM": "cosmos",    "LTC": "litecoin",   "TRX": "tron",
+    "NEAR": "near-protocol","ALGO": "algorand","SUI": "sui",
+    "APT": "aptos",      "OP": "optimism",    "ARB": "arbitrum",
+    "INJ": "injective",  "TON": "toncoin",    "PEPE": "pepe",
 }
 
 
 async def _get_trending_coins() -> list[str]:
-    """Fetch top trending coins from CoinGecko (no API key required)."""
+    """Fetch top-volatility coins from CoinCap top-20 (no rate limits).
+
+    Returns the 3 coins with the largest absolute 24h price change — these
+    are the most "active" and best suited for market analysis posts.
+    """
     def _fetch() -> list[str]:
         resp = _requests.get(
-            "https://api.coingecko.com/api/v3/search/trending", timeout=12
+            "https://api.coincap.io/v2/assets",
+            params={"limit": 20},
+            timeout=10,
         )
         resp.raise_for_status()
-        data = resp.json()
-        return [coin["item"]["symbol"].upper() for coin in data["coins"][:3]]
+        assets = resp.json().get("data", [])
+        # Sort by absolute 24h change to find most active coins
+        active = sorted(
+            [a for a in assets if a.get("changePercent24Hr")],
+            key=lambda a: abs(float(a.get("changePercent24Hr", 0) or 0)),
+            reverse=True,
+        )
+        return [a["symbol"].upper() for a in active[:3]]
 
     try:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _fetch)
-    except Exception as e:
-        logger.warning(f"Trend fetch failed: {e}")
+    except Exception as exc:
+        logger.warning("Trend fetch (CoinCap) failed: %s", exc)
         return ["BTC", "ETH", "SOL"]
 
 
 async def _get_market_data(coin: str) -> str | None:
-    """Fetch price/volume/change for a coin via CoinGecko (replaces geo-blocked Binance API)."""
-    def _fetch() -> str:
-        cg_id = _CG_IDS.get(coin.upper(), coin.lower())
-        resp  = _requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{cg_id}",
-            params={
-                "localization": "false", "tickers": "false",
-                "community_data": "false", "developer_data": "false",
-            },
-            timeout=12,
+    """Fetch price/volume/change: Binance primary → CoinCap fallback.
+
+    Never calls CoinGecko — its free tier rate-limits too aggressively.
+    """
+    sym = coin.upper()
+
+    def _fetch_binance() -> str | None:
+        pair = _BINANCE_PAIRS.get(sym)
+        if not pair:
+            return None
+        resp = _requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": pair},
+            timeout=10,
         )
         resp.raise_for_status()
-        data   = resp.json()
-        market = data.get("market_data", {})
-        price  = market.get("current_price",             {}).get("usd", 0) or 0
-        change = market.get("price_change_percentage_24h", 0) or 0
-        vol    = market.get("total_volume",              {}).get("usd", 0) or 0
-        cap    = market.get("market_cap",                {}).get("usd", 0) or 0
-        high   = market.get("high_24h",                  {}).get("usd", 0) or 0
-        low    = market.get("low_24h",                   {}).get("usd", 0) or 0
+        d      = resp.json()
+        price  = float(d.get("lastPrice", 0) or 0)
+        change = float(d.get("priceChangePercent", 0) or 0)
+        vol    = float(d.get("quoteVolume", 0) or 0)   # USDT volume
+        high   = float(d.get("highPrice", 0) or 0)
+        low    = float(d.get("lowPrice", 0) or 0)
         return (
-            f"Asset: ${coin} | Price: ${price:,.4f} | 24h Change: {change:+.2f}% | "
-            f"24h Volume: ${vol:,.0f} | Market Cap: ${cap:,.0f} | "
-            f"24h High: ${high:,.4f} | 24h Low: ${low:,.4f}"
+            f"Asset: ${sym} | Price: ${price:,.4f} | 24h Change: {change:+.2f}% | "
+            f"24h Volume: ${vol:,.0f} | 24h High: ${high:,.4f} | 24h Low: ${low:,.4f}"
         )
 
+    def _fetch_coincap() -> str | None:
+        cid  = _COINCAP_IDS.get(sym, sym.lower())
+        resp = _requests.get(
+            f"https://api.coincap.io/v2/assets/{cid}",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        d      = resp.json().get("data", {})
+        price  = float(d.get("priceUsd", 0) or 0)
+        change = float(d.get("changePercent24Hr", 0) or 0)
+        vol    = float(d.get("volumeUsd24Hr", 0) or 0)
+        cap    = float(d.get("marketCapUsd", 0) or 0)
+        return (
+            f"Asset: ${sym} | Price: ${price:,.4f} | 24h Change: {change:+.2f}% | "
+            f"24h Volume: ${vol:,.0f} | Market Cap: ${cap:,.0f}"
+        )
+
+    loop = asyncio.get_running_loop()
+
+    # Primary: Binance — no rate limits on public endpoints
     try:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _fetch)
-    except Exception as e:
-        logger.warning(f"Market data fetch failed for {coin}: {e}")
-        return None   # None = no data; caller must skip posting
+        result = await loop.run_in_executor(None, _fetch_binance)
+        if result:
+            return result
+    except Exception as exc:
+        logger.debug("Market data: Binance failed for %s: %s", sym, exc)
+
+    # Fallback: CoinCap
+    try:
+        result = await loop.run_in_executor(None, _fetch_coincap)
+        if result:
+            return result
+    except Exception as exc:
+        logger.warning("Market data: CoinCap failed for %s: %s", sym, exc)
+
+    return None   # caller skips posting when None
 
 
 async def _periodic_market_analysis(tg_client: Any) -> None:

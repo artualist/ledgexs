@@ -36,20 +36,15 @@ logger = logging.getLogger("whale_bot.news")
 
 SOURCE_CHANNELS: list[str] = [
     # CoingraphNews operates multiple channel accounts — all four must be listed
-    "@CoingraphNews",
     "@lookonchainchannel",
-    "@bulltheory",
-    "@CoinBureau",
     "@cointelegraph",
     "@bitcoinmagazinetelegram",
     "@fin_watch",
-    "@yoyodexhaber",
     "@unfolded",
     "@ninjanewstr",
     "@watcherguru",
     "@coinmuhendisihaber",
     "@news_crypto",
-    "@jrkripto",
     # Only add channels here whose posts you WANT published to @Ledgexs.
 ]
 
@@ -119,7 +114,7 @@ AI_COMBINED_PROMPT = (
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
     "2. LENGTH: MAXIMUM 1-2 sentences summarising the news (NOT TOO LONG).\n"
-    "3. ANALYST TAKE (1-2 sentences max — write it as a direct follow-up paragraph, no label or header): "
+    "3. AI INSIGHT: MAXIMUM ONLY 1 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "Give a SHARP, OPINIONATED read. Sound like a real analyst who's been watching markets for years — not a PR bot.\n"
     "  RULES for the take:\n"
     "  • Take a position. Be concrete. If something smells off, say so.\n"
@@ -872,13 +867,11 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
 # ── Twitter / X poster (sync — call via run_in_executor) ─────────────────────
 
 def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
-    """Mirror the Telegram news post to X/Twitter — same plain text + image, no commentary."""
+    """Mirror the Telegram news post to X/Twitter — full text, no truncation (Premium account)."""
     if _twitter_v2 is None:
         return
 
-    # Strip HTML tags → plain text for Twitter
-    plain      = _strip_html(rewritten_text)
-    tweet_text = plain[:280]
+    plain = _strip_html(rewritten_text)
 
     # ── Media upload ─────────────────────────────────────────────────────────
     media_ids: list[int] = []
@@ -893,14 +886,11 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
 
     # ── Post tweet ───────────────────────────────────────────────────────────
     try:
-        kwargs: dict[str, Any] = {"text": tweet_text, "user_auth": True}
+        kwargs: dict[str, Any] = {"text": plain, "user_auth": True}
         if media_ids:
             kwargs["media_ids"] = media_ids
         _twitter_v2.create_tweet(**kwargs)
-        logger.info(
-            "news_aggregator: X post OK (%d chars, media=%d).",
-            len(tweet_text), len(media_ids),
-        )
+        logger.info("news_aggregator: X post OK (%d chars, media=%d).", len(plain), len(media_ids))
     except Exception as exc:
         logger.warning("news_aggregator: X post failed: %s", exc)
 

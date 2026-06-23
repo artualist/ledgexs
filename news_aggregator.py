@@ -164,143 +164,6 @@ MARKET_INSIGHT_PROMPT = (
     "DATA PROVIDED:\n{data}"
 )
 
-# ── Twitter news quality scoring ──────────────────────────────────────────────
-
-# Min score (0-100) for a news item to be cross-posted to X/Twitter
-TWITTER_SCORE_MIN      = 52
-# Max news tweets per calendar day (UTC) to avoid flooding
-TWITTER_NEWS_MAX_DAILY = 14
-# Min seconds between consecutive news tweets (25 min)
-TWITTER_MIN_INTERVAL_S = 25 * 60
-
-# Keyword → impact weight. Matched against lowercase raw_text.
-_TW_HIGH_IMPACT: dict[str, int] = {
-    "hack": 42, "hacked": 42, "exploit": 42, "exploited": 42, "breach": 38,
-    "stolen": 35, "drained": 35, "rug": 32, "exit scam": 38,
-    "sec": 32, "cftc": 30, "regulation": 22, "ban": 32, "banned": 32, "trump": 32,
-    "illegal": 25, "shutdown": 28, "enforcement": 28, "lawsuit": 25, "charged": 28,
-    "arrest": 32, "arrested": 32, "fraud": 30, "indicted": 35, "usa": 15, "us": 15,
-    "etf": 28, "approval": 28, "approved": 28, "rejected": 30, "denied": 25,
-    "fed": 28, "federal reserve": 32, "rate cut": 32, "rate hike": 32,
-    "interest rate": 28, "inflation": 20, "cpi": 22,
-    "ath": 32, "all-time high": 32, "all time high": 32, "record": 22,
-    "crash": 30, "collapse": 35, "dump": 20, "liquidation": 28, "liquidated": 28,
-    "blackrock": 32, "fidelity": 28, "vanguard": 25, "institutional": 22,
-    "acquisition": 25, "merger": 25, "acquired": 25, "bankrupt": 35,
-    "bankruptcy": 38, "insolvency": 38, "insolvent": 38, "default": 32,
-    "depeg": 42, "depegged": 42, "de-peg": 42, "the u.s.": 20,
-    "trillion": 32, "billion": 22, "elon": 35, "musk": 35, "nvidia": 40,
-    "emergency": 25, "breaking": 18, "urgent": 18, "just in": 15,
-    "whale": 18, "large transfer": 18, "sec": 52,
-    "stablecoin": 18, "usdt": 20, "usdc": 20,
-    "cbdc": 22, "central bank": 25, "imf": 25, "world bank": 22,
-    "china": 18, "russia": 18, "trump": 22, "congress": 20, "senate": 20,
-    "mining": 15, "hashrate": 15, "miner": 15,
-}
-
-_TW_MAJOR_ASSETS: set[str] = {
-    "btc", "bitcoin", "eth", "ethereum", "sol", "solana",
-    "bnb", "xrp", "ripple", "usdt", "usdc",
-}
-
-_TW_LOW_VALUE: dict[str, int] = {
-    "prediction": -10, "tutorial": -15, "reminder": -12,
-    "giveaway": -20, "airdrop": -12, "subscribe": -15,
-    "tip of the day": -15, "did you know": -10,
-}
-
-
-def _score_news_for_twitter(text: str) -> int:
-    """Score raw news text 0-100 for Twitter cross-posting worthiness."""
-    t = text.lower()
-    score = 0
-
-    for kw, w in _TW_HIGH_IMPACT.items():
-        if kw in t:
-            score += w
-
-    # Bonus for major asset mention (count only once)
-    for asset in _TW_MAJOR_ASSETS:
-        if asset in t:
-            score += 20
-            break
-
-    for kw, w in _TW_LOW_VALUE.items():
-        if kw in t:
-            score += w
-
-    # Bonus for concrete dollar figures ($Xb / $Xm / $Xt)
-    for m in re.finditer(r'\$(\d+(?:\.\d+)?)\s*([bmt])', t):
-        unit = m.group(2)
-        amt  = float(m.group(1))
-        if unit == "t":
-            score += 32
-        elif unit == "b":
-            score += 25 if amt >= 1 else 12
-        elif unit == "m":
-            score += 14 if amt >= 100 else 6
-
-    return max(0, min(100, score))
-
-
-# ── Twitter viral tweet prompt ─────────────────────────────────────────────────
-
-TWITTER_TWEET_PROMPT = (
-    "You are a senior analyst at @Ledgexs writing a VIRAL breaking-news tweet for X/Twitter.\n"
-    "The tweet must stop thumbs mid-scroll AND be credible — not hype, not corporate.\n\n"
-    "NEWS INPUT:\n{news}\n\n"
-    "PRIMARY ASSET SYMBOL: {symbol}\n\n"
-    "Return ONLY valid JSON. No explanation, no markdown wrapper:\n"
-    '{{\n'
-    '  "hook": "🚨 BREAKING: [headline in 1 sentence. Weave ${symbol} naturally into the sentence, '
-    'ALL CAPS for the most critical words. Max 85 chars.]",\n'
-    '  "b1": "• [What exactly happened — cite a specific number or fact from the news. Max 62 chars.]",\n'
-    '  "b2": "• [On-chain signal, market consequence, or institutional angle. Concrete. Max 62 chars.]",\n'
-    '  "b3": "• [Key price level or data point to watch — end exactly with: 📌 Bookmark this. Max 72 chars.]",\n'
-    '  "poll_q": "[Controversial prediction that splits the audience 50/50. Max 70 chars.]",\n'
-    '  "poll_1": "[Bullish / Yes outcome — max 25 chars]",\n'
-    '  "poll_2": "[Bearish / No outcome — max 25 chars]"\n'
-    '}}\n\n'
-    "RULES:\n"
-    "1. ${symbol} MUST appear in the hook sentence — weaved naturally, not tacked on at the end.\n"
-    "   GOOD: '🚨 BREAKING: $BTC WHALE MOVES 12,000 COINS TO BINANCE COLD STORAGE'\n"
-    "   GOOD: '🚨 BREAKING: SEC REJECTS SPOT $ETH ETF — RULING DROPS IN 48 HOURS'\n"
-    "   BAD:  '🚨 BREAKING: Major Crypto Exchange Hacked — $BTC'\n"
-    "2. Total tweet text (hook + 2 blank lines + 3 bullets + newlines) must stay ≤278 chars.\n"
-    "3. b1 MUST cite at least 1 specific number or data point.\n"
-    "4. b3 MUST end with exactly: 📌 Bookmark this\n"
-    "5. Poll question must be genuinely polarising — people must feel compelled to pick a side.\n"
-    "6. Poll options must be clearly opposite and ≤25 chars each.\n"
-    "7. Analyst voice: credible, direct, slightly irreverent. Not hype. Not corporate.\n"
-    "8. FORBIDDEN: hashtags, 'NFA', 'DYOR', 'to the moon', emoji spam.\n"
-)
-
-# ── News aggregator Twitter state ─────────────────────────────────────────────
-
-_NA_STATE_FILE = "/data/news_aggregator_state.json"
-_na_state: dict[str, Any] = {}
-
-
-def _na_load_state() -> dict[str, Any]:
-    try:
-        with open(_NA_STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def _na_save_state() -> None:
-    try:
-        with open(_NA_STATE_FILE, "w") as f:
-            json.dump(_na_state, f)
-    except Exception as exc:
-        logger.warning("news_aggregator: state save failed: %s", exc)
-
-
-_na_state = _na_load_state()
-_na_state.setdefault("twitter_last_ts", 0.0)
-_na_state.setdefault("twitter_daily_count", 0)
-_na_state.setdefault("twitter_daily_date", "")
 
 # ── Env vars ──────────────────────────────────────────────────────────────────
 
@@ -1008,99 +871,14 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
 
 # ── Twitter / X poster (sync — call via run_in_executor) ─────────────────────
 
-def _post_to_twitter(rewritten_text: str, media_paths: list[str], twitter_score: int = 0) -> None:
-    """Post breaking news to X/Twitter using viral 3-part format with poll.
-
-    Only posts if:
-      • twitter_score >= TWITTER_SCORE_MIN  (quality filter)
-      • Daily cap not reached              (≤ TWITTER_NEWS_MAX_DAILY)
-      • Minimum interval since last tweet  (TWITTER_MIN_INTERVAL_S)
-    """
+def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
+    """Mirror the Telegram news post to X/Twitter — same plain text + image, no commentary."""
     if _twitter_v2 is None:
         return
 
-    # ── Quality filter ───────────────────────────────────────────────────────
-    if twitter_score < TWITTER_SCORE_MIN:
-        logger.debug(
-            "news_aggregator: Twitter skip — score %d < threshold %d.",
-            twitter_score, TWITTER_SCORE_MIN,
-        )
-        return
-
-    # ── Daily cap ────────────────────────────────────────────────────────────
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if _na_state.get("twitter_daily_date") != today:
-        _na_state["twitter_daily_count"] = 0
-        _na_state["twitter_daily_date"]  = today
-    if _na_state.get("twitter_daily_count", 0) >= TWITTER_NEWS_MAX_DAILY:
-        logger.info(
-            "news_aggregator: Twitter daily cap reached (%d). Skipping.", TWITTER_NEWS_MAX_DAILY
-        )
-        return
-
-    # ── Rate limit ───────────────────────────────────────────────────────────
-    elapsed = time.time() - float(_na_state.get("twitter_last_ts", 0.0))
-    if elapsed < TWITTER_MIN_INTERVAL_S:
-        logger.debug(
-            "news_aggregator: Twitter rate limit — %.0f s since last tweet (min %d s).",
-            elapsed, TWITTER_MIN_INTERVAL_S,
-        )
-        return
-
-    # ── Detect primary cashtag from rewritten Telegram text ─────────────────
-    plain = _strip_html(rewritten_text)
-    cashtags = re.findall(r"\$([A-Z]{2,10})", plain)
-    symbol = cashtags[0] if cashtags else "BTC"
-
-    # ── GPT: generate viral tweet format ─────────────────────────────────────
-    tweet_text: str = ""
-    poll_q: str | None = None
-    poll_1: str | None = None
-    poll_2: str | None = None
-
-    if _ai_client is not None:
-        try:
-            news_snippet = plain[:350]
-            prompt = TWITTER_TWEET_PROMPT.format(news=news_snippet, symbol=symbol)
-            resp = _ai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.88,
-                max_tokens=320,
-                response_format={"type": "json_object"},
-            )
-            raw_json = (resp.choices[0].message.content or "").strip()
-            data = json.loads(raw_json)
-
-            hook   = (data.get("hook") or "")[:90]
-            b1     = (data.get("b1")   or "")[:68]
-            b2     = (data.get("b2")   or "")[:68]
-            b3     = (data.get("b3")   or "")[:78]
-            poll_q = (data.get("poll_q") or "")[:100]
-            poll_1 = (data.get("poll_1") or "")[:25]
-            poll_2 = (data.get("poll_2") or "")[:25]
-
-            # Ensure cashtag is present in the hook (fallback: prepend symbol)
-            if f"${symbol}" not in hook:
-                hook = hook.replace("🚨 BREAKING:", f"🚨 BREAKING: ${symbol} —", 1)
-
-            assembled = f"{hook}\n\n{b1}\n{b2}\n{b3}"
-            # Hard trim to 278 chars (leave room for Twitter internal padding)
-            tweet_text = assembled[:278]
-
-        except Exception as exc:
-            logger.warning(
-                "news_aggregator: Twitter GPT format failed (%s) — using plain fallback.", exc
-            )
-
-    # Fallback: use stripped first paragraph, keep cashtag count ≤ 1
-    if not tweet_text:
-        fallback = plain.split("\n\n")[0].strip()
-        ct_count = len(re.findall(r"\$[A-Z]{1,10}", fallback))
-        if ct_count > 1:
-            fallback = re.sub(r"\$([A-Z]{1,10})", r"\1", fallback)
-        tweet_text = fallback[:278]
-        poll_q = poll_1 = poll_2 = None  # no poll on fallback
+    # Strip HTML tags → plain text for Twitter
+    plain      = _strip_html(rewritten_text)
+    tweet_text = plain[:280]
 
     # ── Media upload ─────────────────────────────────────────────────────────
     media_ids: list[int] = []
@@ -1118,23 +896,11 @@ def _post_to_twitter(rewritten_text: str, media_paths: list[str], twitter_score:
         kwargs: dict[str, Any] = {"text": tweet_text, "user_auth": True}
         if media_ids:
             kwargs["media_ids"] = media_ids
-            # Polls and media cannot coexist on X — skip poll when media is present
-        elif poll_q and poll_1 and poll_2:
-            kwargs["poll_options"]          = [poll_1, poll_2]
-            kwargs["poll_duration_minutes"] = 1440  # 24h poll
-
         _twitter_v2.create_tweet(**kwargs)
         logger.info(
-            "news_aggregator: X post OK (score=%d, %d chars, poll=%s, media=%d).",
-            twitter_score, len(tweet_text),
-            bool(poll_q and not media_ids), len(media_ids),
+            "news_aggregator: X post OK (%d chars, media=%d).",
+            len(tweet_text), len(media_ids),
         )
-
-        # Persist rate-limit state
-        _na_state["twitter_last_ts"]    = time.time()
-        _na_state["twitter_daily_count"] = _na_state.get("twitter_daily_count", 0) + 1
-        _na_save_state()
-
     except Exception as exc:
         logger.warning("news_aggregator: X post failed: %s", exc)
 
@@ -1153,13 +919,6 @@ async def _handle_news(
         return
 
     loop = asyncio.get_running_loop()
-
-    # Score raw_text for Twitter BEFORE any rewrite — original wording has the
-    # highest keyword density for scoring (hacks are "hacks", not "security incidents").
-    twitter_score = _score_news_for_twitter(raw_text)
-    logger.debug(
-        "news_aggregator: Twitter score=%d for news from @%s", twitter_score, source_username
-    )
 
     # --- PRE-DEDUP: fast Jaccard fingerprint check (no AI cost) ---
     # Build a normalised word-set from the raw text and compare it against
@@ -1240,10 +999,8 @@ async def _handle_news(
         # Blocking HTTP calls offloaded to thread pool so event loop stays free
         await loop.run_in_executor(None, _post_to_telegram, clean_tg_text, media_paths)
 
-        # Twitter: pass the full rewritten text + pre-computed score.
-        # _post_to_twitter handles quality filtering, rate limiting, GPT
-        # formatting, cashtag injection, and poll creation internally.
-        await loop.run_in_executor(None, _post_to_twitter, rewritten, media_paths, twitter_score)
+        # Mirror to Twitter: same text + image as Telegram, no extra processing.
+        await loop.run_in_executor(None, _post_to_twitter, rewritten, media_paths)
 
     finally:
         _cleanup_media_dir()

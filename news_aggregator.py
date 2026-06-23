@@ -113,8 +113,8 @@ AI_COMBINED_PROMPT = (
     "     a) <b>🚨 JUST IN:</b> — for new, timely developments and unexpected announcements\n"
     "     b) <b>⚡ BREAKING:</b> — for major, high-impact events that shift market sentiment\n"
     "     c) <b>📊 MARKET ALERT:</b> — for price action, technical indicators, or on-chain data\n"
-    "2. LENGTH: MAXIMUM ONLY 1 sentence summarising the news (NOT TOO LONG).\n"
-    "3. AI INSIGHT: MAXIMUM ONLY 1 sentence of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
+    "2. LENGTH: MAXIMUM 1-2 sentences summarising the news (NOT TOO LONG).\n"
+    "3. AI INSIGHT: MAXIMUM ONLY 1 sentences of professional analysis. No headers or labels — write it as a direct follow-up paragraph.\n"
     "Give a SHARP, OPINIONATED read. Sound like a real analyst who's been watching markets for years — not a PR bot.\n"
     "  RULES for the take:\n"
     "  • Take a position. Be concrete. If something smells off, say so.\n"
@@ -867,11 +867,14 @@ def _post_to_telegram(tg_text: str, media_paths: list[str]) -> None:
 # ── Twitter / X poster (sync — call via run_in_executor) ─────────────────────
 
 def _post_to_twitter(rewritten_text: str, media_paths: list[str]) -> None:
-    """Mirror the Telegram news post to X/Twitter — full text, no truncation (Premium account)."""
+    """Post news to X/Twitter — news summary only, AI commentary stripped (Premium account)."""
     if _twitter_v2 is None:
         return
 
+    # AI rewrite format: first paragraph = news summary, second = AI commentary.
+    # Twitter gets only the first paragraph — no AI opinion.
     plain = _strip_html(rewritten_text)
+    plain = plain.split("\n\n")[0].strip()
 
     # ── Media upload ─────────────────────────────────────────────────────────
     media_ids: list[int] = []

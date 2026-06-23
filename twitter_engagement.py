@@ -8,8 +8,8 @@ Any exception inside is caught and logged — this module can NEVER crash main.p
 
 Features
 --------
-1. FEAR & GREED       — daily at UTC 15:00; alternative.me real data + GPT commentary
-2. TOP MOVERS         — daily at 09:00 UTC; CoinGecko top-3 gain/loss narrative
+1. FEAR & GREED  — daily at UTC 15:00; alternative.me real data + GPT commentary
+2. TOP MOVERS    — daily at 09:00 UTC; CoinPaprika top-3 gain/loss narrative
 
 All features degrade gracefully to no-op if API keys are missing.
 
@@ -25,8 +25,6 @@ import asyncio
 import json
 import logging
 import os
-import random
-import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -37,11 +35,9 @@ import requests
 logger = logging.getLogger("whale_bot.twitter_engagement")
 
 # ── Timing constants ───────────────────────────────────────────────────────────
-FEAR_GREED_UTC_HOUR     = 15               # Fear & Greed tweet hour (UTC)
-TOP_MOVERS_HOUR_UTC     = 9               # daily Top Movers post at 09:00 UTC
-ONCHAIN_INTERVAL_S      = 8 * 3600        # On-Chain Detective cadence
-THREAD_INTERVAL_S       = 12 * 3600       # Thread Storytelling cadence
-HTTP_TIMEOUT            = 15              # seconds for external API requests
+FEAR_GREED_UTC_HOUR  = 15    # Fear & Greed tweet hour (UTC)
+TOP_MOVERS_HOUR_UTC  = 9     # daily Top Movers post at 09:00 UTC
+HTTP_TIMEOUT         = 15    # seconds for external API requests
 
 # ── State file — persists last-replied tweet IDs across Railway restarts ───────
 # IMPORTANT: must be on the /data volume (persistent), NOT /tmp (cleared on restart).
@@ -87,76 +83,6 @@ _TOP_MOVERS_PROMPT_TMPL = (
     "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC), 'NFA'.\n"
     "Output ONLY the insight text."
 )
-
-_ONCHAIN_PROMPT_TMPL = (
-    "You are an on-chain analyst at @Ledgexs. You look at raw data and call what it actually means.\n"
-    "Live on-chain readings:\n\n"
-    "BITCOIN:\n{btc_data}\n\n"
-    "ETHEREUM:\n{eth_data}\n\n"
-    "Write ONE on-chain observation. Rules:\n"
-    "- Lead with the data point that is most out of the ordinary — fee spike, hashrate anomaly, huge mempool shift.\n"
-    "- Interpret it like an analyst, not a reporter. What behaviour does this data suggest? Who is likely doing what?\n"
-    "- If BTC and ETH are moving in opposite directions on-chain, that divergence IS the story — call it.\n"
-    "- If the data is genuinely ambiguous, say 'no strong signal here yet' — never manufacture a narrative.\n"
-    "- Write in first-person perspective: 'I'm watching X because Y' is fine. Authentic reads > corporate prose.\n"
-    "- MAX 240 characters. Use 🔍 or ⚡ if it genuinely fits.\n"
-    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
-    "Output ONLY the tweet text."
-)
-
-_THREAD_PROMPT_TMPL = (
-    "You are a senior analyst at @Ledgexs — sharp, opinionated, credible. You've seen multiple cycles.\n"
-    "Live market context:\n{market_context}\n\n"
-    "Current trending news:\n{news_context}\n\n"
-    "Pick the SINGLE MOST SIGNIFICANT macro or geopolitical event from the news that is currently "
-    "moving or about to move financial markets and crypto. "
-    "Avoid individual coin price action. Focus on: central bank decisions, geopolitics, regulation, "
-    "major institutional moves, structural market shifts, or sovereign economic events.\n\n"
-    "Write a 6-tweet thread — like a real analyst sharing a genuine take, not a corporate report:\n\n"
-    "Tweet 1 — HOOK (MAX 200 chars): "
-    "Open with a bold, direct claim or provocative framing of the event. Then 1 sentence on why it matters NOW. "
-    "End with '🧵'. Make people feel like they'll miss something if they don't read the thread.\n\n"
-    "Tweet 2 — WHAT ACTUALLY HAPPENED (MAX 240 chars): "
-    "Precise facts and figures — no filler. State the event like a Bloomberg terminal, not a tweet writer.\n\n"
-    "Tweet 3 — CRYPTO/MARKET READ (MAX 240 chars): "
-    "Your actual take on how this hits crypto and broader markets. First-person perspective is fine: 'The real risk here is...'\n\n"
-    "Tweet 4 — HISTORICAL PARALLEL (MAX 240 chars): "
-    "What happened the last time something like this played out? Specific year, event, outcome.\n\n"
-    "Tweet 5 — WHAT TO WATCH (MAX 240 chars): "
-    "Two to three concrete signals that will confirm or kill your thesis. Date or price level if possible.\n\n"
-    "Tweet 6 — CTA (MAX 240 chars): "
-    "Genuine, brief promo for Ledgexs channels — don't make it feel like an ad:\n"
-    "• Telegram news: t.me/Ledgexs\n"
-    "• Whale alerts: t.me/LedgexsWhale\n"
-    "• Whale bot: @LedgexsBot on Telegram\n"
-    "• Follow @Ledgexs on X\n\n"
-    "Tone: real analyst voice — confident, direct, occasionally irreverent. Not dry, not hyped.\n"
-    "FORBIDDEN in all tweets: hashtags, cashtags ($BTC — write BTC), 'NFA', 'DYOR', 'to the moon'.\n"
-    "REQUIRED: at least one specific data point per tweet (1-5).\n\n"
-    "Output ONLY a valid JSON array of exactly 6 strings:\n"
-    "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\", \"tweet5\", \"tweet6\"]"
-)
-
-# Fallback topics used only when live news fetch returns no usable data.
-# Topics are deliberately macro/geopolitical — not coin-specific — to maximise engagement.
-_THREAD_TOPICS_FALLBACK = [
-    "How central bank rate decisions ripple through crypto markets",
-    "Why geopolitical tensions drive capital into Bitcoin as a reserve asset",
-    "The relationship between US dollar strength and global crypto risk appetite",
-    "How US-China trade tensions reshape the global crypto mining landscape",
-    "The IMF, World Bank, and crypto: an uneasy coexistence with trillion-dollar implications",
-    "Energy policy, oil prices, and the hidden link to Bitcoin's mining economics",
-    "How sovereign debt crises historically trigger crypto adoption cycles",
-    "The real reason institutional money moves in and out of crypto during market stress",
-    "Global inflation regimes and why crypto behaves differently in each one",
-    "How banking sector crises create structural demand for self-custodied assets",
-    "Why emerging market currency collapses consistently drive crypto on-ramp volume",
-    "The EU's MiCA framework: what it actually changes for global crypto markets",
-    "CBDC rollouts worldwide: threat or catalyst for decentralised crypto adoption?",
-    "How global sanctions and financial exclusion accelerate crypto infrastructure growth",
-    "The strategic Bitcoin reserve debate: what it means if governments hold BTC",
-    "Why crypto market cycles are increasingly correlated with traditional risk-on/off regimes",
-]
 
 # ── Client initialisation ──────────────────────────────────────────────────────
 
@@ -228,32 +154,10 @@ def _save_state(state: dict) -> None:
         logger.warning("twitter_engagement: could not save state: %s", exc)
 
 
-# Curated crypto accounts to auto-follow (rotates through the list every 30 min)
-_CRYPTO_FOLLOW_LIST: list[str] = [
-    "lookonchain", "ai_9684xtpa", "WClementeIII", "ki_young_ju",
-    "100trillionUSD", "woonomic", "PeterLBrandt", "RaoulGMI",
-    "CryptoCapo_", "Pentosh1", "CryptoHayes", "APompliano",
-    "saylor", "novogratz", "glassnode", "santimentfeed",
-    "Cointelegraph", "CoinDesk", "TheBlock__", "DecryptMedia",
-    "VitalikButerin", "coinbase", "binance",
-    "uniswap", "aave", "MakerDAO", "compoundfinance",
-    "Chainlink", "0xPolygon", "arbitrum", "optimismFND",
-    "solana", "avalancheavax", "cosmos", "Polkadot",
-    "starkwareltd", "zksync", "eigenlayer", "pendle_fi",
-    "HyperliquidX", "dydx", "GMX_IO", "JupiterExchange",
-    "cobie", "hsakatrades", "inversebrah", "thedefiedge",
-    "Route2FI", "CryptoKaleo", "DonAlt", "SmartContracter",
-]
-FOLLOW_INTERVAL_S = 32 * 60   # ~30 min with slight randomisation
-
 # In-memory state; hydrated from disk at startup.
 _state: dict = _load_state()
 _state.setdefault("fear_greed_last_date", "")
 _state.setdefault("top_movers_last_date", "")
-_state.setdefault("onchain_last_ts", 0.0)
-_state.setdefault("thread_last_ts", 0.0)
-_state.setdefault("follow_last_ts", 0.0)
-_state.setdefault("follow_idx", 0)
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -287,29 +191,6 @@ def _post_tweet(text: str) -> str | None:
     except Exception as exc:
         logger.warning("twitter_engagement: post_tweet failed: %s", exc)
         return None
-
-
-def _post_thread(tweets: list[str]) -> bool:
-    """Post a list of tweet texts as a connected thread. Returns True on success."""
-    if _twitter_v2 is None or not tweets:
-        return False
-    prev_id: str | None = None
-    success = 0
-    for i, text in enumerate(tweets):
-        try:
-            kwargs: dict[str, Any] = {"text": text[:280], "user_auth": True}
-            if prev_id:
-                kwargs["in_reply_to_tweet_id"] = prev_id
-            resp = _twitter_v2.create_tweet(**kwargs)
-            prev_id = resp.data.get("id") if resp and resp.data else None
-            if prev_id:
-                success += 1
-            time.sleep(2)   # brief gap between tweets
-        except Exception as exc:
-            logger.warning("twitter_engagement: thread tweet %d failed: %s", i + 1, exc)
-            break
-    logger.info("twitter_engagement: posted thread %d/%d tweets.", success, len(tweets))
-    return success == len(tweets)
 
 
 def _safe_get(url: str, params: dict | None = None) -> dict | list | None:
@@ -475,317 +356,15 @@ def _post_top_movers(today_str: str) -> None:
         _save_state(_state)
 
 
-# ── Feature 4: On-Chain Detective ─────────────────────────────────────────────
-
-async def _onchain_detective_loop() -> None:
-    """Every 8 hours: fetch real BTC + ETH on-chain data and tweet an analysis."""
-    await asyncio.sleep(600)  # 10 min initial delay
-    logger.info("twitter_engagement: onchain_detective_loop started.")
-
-    while True:
-        last_ts = _state.get("onchain_last_ts", 0.0)
-        if time.time() - last_ts >= ONCHAIN_INTERVAL_S:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, _post_onchain)
-        await asyncio.sleep(1800)
-
-
-def _fetch_btc_onchain() -> str:
-    """
-    Fetch BTC on-chain data from mempool.space (free, reliable, no API key).
-    blockchain.info stats endpoint has inconsistent field names and unit issues —
-    mempool.space is the authoritative source for Bitcoin network data.
-    """
-    lines: list[str] = []
-
-    # Mempool fee rates (priority / standard / economy sat/vB)
-    fees = _safe_get("https://mempool.space/api/v1/fees/recommended")
-    if fees and isinstance(fees, dict):
-        fastest  = fees.get("fastestFee", "?")
-        half_hr  = fees.get("halfHourFee", "?")
-        economy  = fees.get("economyFee", "?")
-        lines.append(f"Mempool fees — Fast: {fastest} sat/vB | Std: {half_hr} | Economy: {economy}")
-
-    # Latest block height
-    height = _safe_get("https://mempool.space/api/blocks/tip/height")
-    if isinstance(height, int):
-        lines.append(f"Latest block: #{height:,}")
-
-    # Network hashrate (3-day rolling average from mempool.space)
-    hashrate_data = _safe_get("https://mempool.space/api/v1/mining/hashrate/3d")
-    if hashrate_data and isinstance(hashrate_data, dict):
-        hr_list = hashrate_data.get("hashrates", [])
-        if hr_list:
-            latest_hr = hr_list[-1].get("avgHashrate", 0)
-            if latest_hr:
-                eh = latest_hr / 1e18
-                lines.append(f"Hash rate (3d avg): {eh:.1f} EH/s")
-
-    # Mempool size
-    mempool_info = _safe_get("https://mempool.space/api/mempool")
-    if mempool_info and isinstance(mempool_info, dict):
-        count = mempool_info.get("count", 0)
-        vsize = mempool_info.get("vsize", 0)
-        lines.append(f"Mempool: {count:,} unconfirmed txs ({vsize / 1e6:.1f} MB)")
-
-    # BTC price + volume from Bybit (works from Railway; Binance is US-IP geo-blocked)
-    btc_resp = _safe_get(
-        "https://api.bybit.com/v5/market/tickers",
-        params={"category": "spot", "symbol": "BTCUSDT"},
-    )
-    btc_list = (btc_resp or {}).get("result", {}).get("list", []) if isinstance(btc_resp, dict) else []
-    if btc_list:
-        try:
-            t      = btc_list[0]
-            price  = float(t.get("lastPrice", 0) or 0)
-            change = float(t.get("price24hPcnt", 0) or 0) * 100
-            vol    = float(t.get("turnover24h", 0) or 0)
-            lines.append(f"BTC price: ${price:,.0f} ({change:+.2f}% 24h) | Volume: ${vol / 1e9:.2f}B")
-        except (TypeError, ValueError):
-            pass
-
-    return "\n".join(lines) if lines else "BTC on-chain data temporarily unavailable."
-
-
-def _fetch_eth_onchain() -> str:
-    """Fetch ETH price/volume metrics from Bybit + CoinPaprika for market cap."""
-    resp = _safe_get(
-        "https://api.bybit.com/v5/market/tickers",
-        params={"category": "spot", "symbol": "ETHUSDT"},
-    )
-    eth_list = (resp or {}).get("result", {}).get("list", []) if isinstance(resp, dict) else []
-    if not eth_list:
-        return "ETH data temporarily unavailable."
-
-    try:
-        t      = eth_list[0]
-        price  = float(t.get("lastPrice", 0) or 0)
-        change = float(t.get("price24hPcnt", 0) or 0) * 100
-        vol    = float(t.get("turnover24h", 0) or 0)
-        high   = float(t.get("highPrice24h", 0) or 0)
-        low    = float(t.get("lowPrice24h", 0) or 0)
-    except (TypeError, ValueError):
-        return "ETH data temporarily unavailable."
-
-    lines = [
-        f"Price: ${price:,.2f} ({change:+.2f}% 24h)",
-        f"Volume (24h): ${vol / 1e9:.2f}B",
-        f"24h High: ${high:,.2f} | 24h Low: ${low:,.2f}",
-    ]
-
-    # Supplement with CoinPaprika for market cap + supply
-    cp = _safe_get("https://api.coinpaprika.com/v1/tickers/eth-ethereum")
-    if cp and isinstance(cp, dict):
-        q   = cp.get("quotes", {}).get("USD", {})
-        cap = float(q.get("market_cap", 0) or 0)
-        if cap:
-            lines.append(f"Market cap: ${cap / 1e9:.1f}B")
-
-    return "\n".join(l for l in lines if l)
-
-
-def _post_onchain() -> None:
-    """Synchronous: build on-chain snapshot and tweet detective analysis."""
-    btc_data = _fetch_btc_onchain()
-    eth_data = _fetch_eth_onchain()
-
-    prompt = _ONCHAIN_PROMPT_TMPL.format(btc_data=btc_data, eth_data=eth_data)
-    tweet_text = _gpt(prompt, max_tokens=160)
-    if not tweet_text:
-        return
-
-    full = ("🔍 " + tweet_text)[:280]
-    tid = _post_tweet(full)
-    if tid:
-        _state["onchain_last_ts"] = time.time()
-        _save_state(_state)
-
-
-# ── Feature 5: Thread Storytelling ────────────────────────────────────────────
-
-def _fetch_trending_news() -> str:
-    """Fetch top trending crypto/macro news headlines from CryptoPanic free API.
-
-    Returns a formatted string of headlines for use in the thread prompt,
-    or a curated fallback topic string if the API is unavailable.
-    """
-    try:
-        data = _safe_get(
-            "https://cryptopanic.com/api/free/v1/posts/",
-            params={"public": "true", "filter": "hot", "kind": "news"},
-        )
-        if data and isinstance(data.get("results"), list):
-            headlines = [
-                r.get("title", "")
-                for r in data["results"][:8]
-                if r.get("title")
-            ]
-            if headlines:
-                return "TOP TRENDING NEWS (use the most impactful macro/geopolitical one):\n" + "\n".join(
-                    f"• {h}" for h in headlines
-                )
-    except Exception as exc:
-        logger.debug("twitter_engagement: news fetch failed: %s", exc)
-
-    # Fallback: provide a macro topic context for GPT to work with
-    import random as _rnd
-    fallback = _rnd.choice(_THREAD_TOPICS_FALLBACK)
-    return f"No live news available. Write about this macro topic instead:\n• {fallback}"
-
-
-async def _thread_storytelling_loop() -> None:
-    """Every 12 hours: post a 6-tweet analytical thread on a major macro/geopolitical event."""
-    await asyncio.sleep(900)  # 15 min initial delay
-    logger.info("twitter_engagement: thread_storytelling_loop started.")
-
-    while True:
-        last_ts = _state.get("thread_last_ts", 0.0)
-        if time.time() - last_ts >= THREAD_INTERVAL_S:
-            loop = asyncio.get_running_loop()
-
-            # Fetch live news headlines + market context in parallel via executor
-            market_context, news_context = await asyncio.gather(
-                loop.run_in_executor(None, _build_market_context),
-                loop.run_in_executor(None, _fetch_trending_news),
-            )
-            await loop.run_in_executor(None, _post_thread_now, news_context, market_context)
-
-        await asyncio.sleep(1800)
-
-
-def _build_market_context() -> str:
-    """Build a real-data market snapshot using Bybit + CoinPaprika + Alternative.me.
-
-    Binance is US-IP geo-blocked on Railway. CoinCap has DNS issues on Railway.
-    CoinGecko free tier rate-limits aggressively. All three are avoided.
-    """
-    lines: list[str] = []
-
-    # BTC + ETH prices from Bybit (works globally, no geo restrictions)
-    for sym, pair in (("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")):
-        resp = _safe_get(
-            "https://api.bybit.com/v5/market/tickers",
-            params={"category": "spot", "symbol": pair},
-        )
-        lst = (resp or {}).get("result", {}).get("list", []) if isinstance(resp, dict) else []
-        if lst:
-            try:
-                t      = lst[0]
-                price  = float(t.get("lastPrice", 0) or 0)
-                change = float(t.get("price24hPcnt", 0) or 0) * 100
-                lines.append(f"${sym}: ${price:,.2f} ({change:+.2f}% 24h)")
-            except (TypeError, ValueError):
-                pass
-
-    # Fear & Greed from Alternative.me
-    fng = _safe_get("https://api.alternative.me/fng/", params={"limit": 1})
-    if fng and "data" in fng:
-        v   = fng["data"][0].get("value", "?")
-        lbl = fng["data"][0].get("value_classification", "")
-        lines.append(f"Fear & Greed: {v}/100 ({lbl})")
-
-    # Global market cap + BTC dominance from CoinPaprika top-10
-    cp_global = _safe_get("https://api.coinpaprika.com/v1/tickers", params={"limit": 10})
-    if cp_global and isinstance(cp_global, list):
-        try:
-            total = sum(
-                float((a.get("quotes") or {}).get("USD", {}).get("market_cap") or 0)
-                for a in cp_global
-            )
-            btc_cap = next(
-                (float((a.get("quotes") or {}).get("USD", {}).get("market_cap") or 0)
-                 for a in cp_global if a.get("symbol", "").upper() == "BTC"),
-                0,
-            )
-            if total > 0:
-                est_total = total / 0.85   # top-10 ≈ 85% of market
-                btc_dom   = (btc_cap / est_total) * 100
-                lines.append(f"Total market cap (est.): ${est_total / 1e12:.2f}T")
-                lines.append(f"BTC dominance (est.): {btc_dom:.1f}%")
-        except (TypeError, ValueError, ZeroDivisionError):
-            pass
-
-    return "\n".join(lines) if lines else "Market data temporarily unavailable."
-
-
-def _post_thread_now(news_context: str, market_context: str) -> None:
-    """Synchronous: generate 6-tweet thread via GPT and post."""
-    prompt = _THREAD_PROMPT_TMPL.format(news_context=news_context, market_context=market_context)
-    raw = _gpt(prompt, max_tokens=900, temperature=0.8)
-    if not raw:
-        return
-
-    # Parse JSON array from GPT response
-    try:
-        # GPT sometimes wraps the JSON in markdown code blocks — strip them
-        clean = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("```").strip()
-        tweets: list[str] = json.loads(clean)
-        if not isinstance(tweets, list) or len(tweets) < 6:
-            raise ValueError(f"expected 6 tweets, got {len(tweets) if isinstance(tweets, list) else type(tweets)}")
-    except Exception as exc:
-        logger.warning("twitter_engagement: thread JSON parse failed: %s — raw: %r", exc, raw[:200])
-        return
-
-    logger.info("twitter_engagement: posting 6-tweet thread — context: %r", news_context[:80])
-    success = _post_thread(tweets)
-    if success:
-        _state["thread_last_ts"] = time.time()
-        _save_state(_state)
-
-
-# ── Feature 6: Auto-Follow ────────────────────────────────────────────────────
-
-async def _auto_follow_loop() -> None:
-    """Every ~30 min: follow one crypto account from the curated list.
-
-    Rotates through _CRYPTO_FOLLOW_LIST sequentially, cycling back to the
-    start when the end is reached.  Uses _twitter_v1.create_friendship() which
-    is idempotent — re-following an already-followed account is silently OK.
-    """
-    await asyncio.sleep(180)  # 3 min warm-up
-    logger.info("twitter_engagement: auto_follow_loop started.")
-
-    while True:
-        elapsed = time.time() - float(_state.get("follow_last_ts", 0.0))
-        # Randomise interval ±2 min so it doesn't fire at exact round minutes
-        jitter   = random.uniform(-120, 120)
-        interval = FOLLOW_INTERVAL_S + jitter
-
-        if elapsed >= interval:
-            if _twitter_v1 is not None and _CRYPTO_FOLLOW_LIST:
-                idx      = int(_state.get("follow_idx", 0)) % len(_CRYPTO_FOLLOW_LIST)
-                username = _CRYPTO_FOLLOW_LIST[idx]
-                try:
-                    _twitter_v1.create_friendship(screen_name=username)
-                    logger.info("twitter_engagement: auto-followed @%s", username)
-                except Exception as exc:
-                    logger.debug(
-                        "twitter_engagement: follow @%s — %s (already following or rate limit).",
-                        username, exc,
-                    )
-                # Advance index regardless of success (don't retry same account)
-                _state["follow_idx"]    = (idx + 1) % len(_CRYPTO_FOLLOW_LIST)
-                _state["follow_last_ts"] = time.time()
-                _save_state(_state)
-            else:
-                logger.debug("twitter_engagement: auto_follow skipped — Twitter client unavailable.")
-
-        await asyncio.sleep(300)  # check every 5 min
-
-
 # ── Main async runner ──────────────────────────────────────────────────────────
 
 async def _run_engagement() -> None:
-    """Launches ALL engagement feature coroutines as concurrent asyncio tasks."""
-    logger.info("twitter_engagement: starting all engagement tasks…")
+    """Launches Fear & Greed and Top Movers loops as concurrent asyncio tasks."""
+    logger.info("twitter_engagement: starting engagement tasks…")
     tasks = [
-        asyncio.create_task(_fear_and_greed_loop(),      name="fear_and_greed"),
-        asyncio.create_task(_top_movers_loop(),           name="top_movers"),
-        asyncio.create_task(_onchain_detective_loop(),    name="onchain_detective"),
-        asyncio.create_task(_thread_storytelling_loop(), name="thread_storytelling"),
-        asyncio.create_task(_auto_follow_loop(),          name="auto_follow"),
+        asyncio.create_task(_fear_and_greed_loop(), name="fear_and_greed"),
+        asyncio.create_task(_top_movers_loop(),      name="top_movers"),
     ]
-    # Run forever; individual task exceptions are caught inside each coroutine.
     await asyncio.gather(*tasks, return_exceptions=True)
 
 

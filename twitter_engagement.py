@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
@@ -57,86 +58,81 @@ _AI_BASE_URL = "https://api.openai.com/v1"
 # ── GPT prompts ────────────────────────────────────────────────────────────────
 
 _FEAR_GREED_PROMPT_TMPL = (
-    "You are a senior market strategist at @Ledgexs.\n"
+    "You are an analyst at @Ledgexs who has seen 3 crypto cycles and isn't impressed by either panic or euphoria.\n"
     "Fear & Greed Index: {value}/100 — \"{label}\"\n"
     "7-day readings (oldest→newest): {trend}\n\n"
-    "Write ONE analytical tweet. Rules:\n"
-    "- Open with the raw number and direction — state the fact, not the emotion.\n"
-    "- What does this reading historically precede? Give BOTH the bullish AND bearish historical outcome.\n"
-    "  Example: 'Sub-20 readings preceded 3 of the last 5 cycle bottoms — but also 2 extended bleeds.'\n"
-    "- If trend is declining, say declining. If conditions for reversal aren't confirmed, say so.\n"
-    "- No hype, no 'to the moon', no 'buy the fear'. Calibrated, probabilistic language.\n"
-    "- MAX 240 characters. Dense prose. 1-2 emojis only where they sharpen meaning.\n"
-    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
+    "Write ONE tweet. Rules:\n"
+    "- Lead with the number and trend direction — cold, factual.\n"
+    "- Then give your actual read: what does this level historically lead to? Be specific and honest.\n"
+    "  Don't hedge with 'may' or 'could'. If the historical record is mixed, say it's mixed and why.\n"
+    "  Example: 'Every sub-20 reading in 2022-2023 was a buying opportunity within 3 weeks. 2018 was different — 6 months of pain followed.'\n"
+    "- If sentiment is shifting, call the direction. If it's not confirmed, say what would confirm it.\n"
+    "- Sound like a human who has real money on the line — not a disclaimer machine.\n"
+    "- MAX 240 characters. Tight prose. 1-2 emojis only.\n"
+    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC), 'NFA', 'DYOR', 'to the moon'.\n"
     "Output ONLY the tweet text."
 )
 
 _TOP_MOVERS_PROMPT_TMPL = (
-    "You are a quantitative analyst at @Ledgexs.\n"
+    "You are an analyst at @Ledgexs. The data header already shows the names and numbers.\n"
     "24H market data:\n"
     "TOP GAINERS:\n{gainers}\n\n"
     "TOP LOSERS:\n{losers}\n\n"
-    "Write ONE sharp analytical insight (NOT a recap — the data header already lists the names). Rules:\n"
-    "- Identify the structural reason behind the divergence: sector rotation? macro catalyst? "
-    "  leverage unwind? narrative shift? Be specific.\n"
-    "- Flag if any gain looks unsustainable (thin volume, no catalyst, post-pump pattern).\n"
-    "- Quantify where possible: 'X% gain on Y% below-avg volume = distribution risk.'\n"
-    "- Objective: don't celebrate gains or dramatise losses. Analyse.\n"
-    "- MAX 180 characters. Analyst voice. 1 emoji max.\n"
-    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
+    "Write ONE insight — NOT a recap of what's already in the header. Rules:\n"
+    "- What's the structural story behind this divergence? Sector rotation, macro trigger, narrative flip, leverage cleanup? Name it.\n"
+    "- If a gain smells like distribution (thin volume, no real catalyst, post-parabolic), say so directly.\n"
+    "- If a dump has a clear cause, say the cause. If it's a liquidity cascade, name that too.\n"
+    "- Write like someone who's seen this pattern before and has an opinion — not a neutral observer.\n"
+    "- MAX 180 characters. One clean take. 1 emoji max.\n"
+    "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC), 'NFA'.\n"
     "Output ONLY the insight text."
 )
 
 _ONCHAIN_PROMPT_TMPL = (
-    "You are a senior on-chain analyst at @Ledgexs. You interpret raw blockchain data.\n"
+    "You are an on-chain analyst at @Ledgexs. You look at raw data and call what it actually means.\n"
     "Live on-chain readings:\n\n"
     "BITCOIN:\n{btc_data}\n\n"
     "ETHEREUM:\n{eth_data}\n\n"
-    "Write ONE on-chain brief. Rules:\n"
-    "- Lead with the single most anomalous or high-signal data point across both chains.\n"
-    "- Interpret BEHAVIOUR, not price: are large holders accumulating, distributing, or neutral?\n"
-    "  What does the mempool/fee/congestion data imply about urgency?\n"
-    "- If BTC and ETH diverge meaningfully, call it out — divergence is often the signal.\n"
-    "- If data is ambiguous or inconclusive, say so. Never force a bullish or bearish conclusion.\n"
-    "- Precision over drama. Write like a quant brief, not a news headline.\n"
-    "- MAX 240 characters. 1-2 emojis (🔍 🐋 📊 ⚡ only).\n"
+    "Write ONE on-chain observation. Rules:\n"
+    "- Lead with the data point that is most out of the ordinary — fee spike, hashrate anomaly, huge mempool shift.\n"
+    "- Interpret it like an analyst, not a reporter. What behaviour does this data suggest? Who is likely doing what?\n"
+    "- If BTC and ETH are moving in opposite directions on-chain, that divergence IS the story — call it.\n"
+    "- If the data is genuinely ambiguous, say 'no strong signal here yet' — never manufacture a narrative.\n"
+    "- Write in first-person perspective: 'I'm watching X because Y' is fine. Authentic reads > corporate prose.\n"
+    "- MAX 240 characters. Use 🔍 or ⚡ if it genuinely fits.\n"
     "- FORBIDDEN: hashtags, cashtags ($SYMBOL — write BTC not $BTC).\n"
     "Output ONLY the tweet text."
 )
 
 _THREAD_PROMPT_TMPL = (
-    "You are a senior macro and crypto research analyst at @Ledgexs.\n"
+    "You are a senior analyst at @Ledgexs — sharp, opinionated, credible. You've seen multiple cycles.\n"
     "Live market context:\n{market_context}\n\n"
     "Current trending news:\n{news_context}\n\n"
-    "Pick the SINGLE MOST SIGNIFICANT macro or geopolitical event from the news above "
-    "that is currently relevant to financial markets and crypto. "
-    "DO NOT write about individual coin price action or technical levels. "
-    "Focus on real-world events: central bank decisions, geopolitics, regulation, major economic data, "
-    "institutional moves, or structural market shifts.\n\n"
-    "Write a 6-tweet research thread structured exactly as follows:\n\n"
+    "Pick the SINGLE MOST SIGNIFICANT macro or geopolitical event from the news that is currently "
+    "moving or about to move financial markets and crypto. "
+    "Avoid individual coin price action. Focus on: central bank decisions, geopolitics, regulation, "
+    "major institutional moves, structural market shifts, or sovereign economic events.\n\n"
+    "Write a 6-tweet thread — like a real analyst sharing a genuine take, not a corporate report:\n\n"
     "Tweet 1 — HOOK (MAX 200 chars): "
-    "BOLD TITLE IN CAPS + emojis describing the event. "
-    "Then 1-2 sentences explaining why it matters RIGHT NOW for markets. "
-    "End with '🧵 Thread'. Make it impossible to scroll past.\n\n"
-    "Tweet 2 — WHAT HAPPENED (MAX 240 chars): "
-    "Specific facts and numbers about the event. No vague statements.\n\n"
-    "Tweet 3 — CRYPTO/MARKET IMPACT (MAX 240 chars): "
-    "How does this directly affect crypto and traditional financial markets right now?\n\n"
-    "Tweet 4 — HISTORICAL PRECEDENT (MAX 240 chars): "
-    "What happened last time something similar occurred? Specific example with outcome.\n\n"
-    "Tweet 5 — RISKS & SCENARIOS (MAX 240 chars): "
-    "Two or three key risks or scenarios to watch. What would confirm or deny the thesis?\n\n"
+    "Open with a bold, direct claim or provocative framing of the event. Then 1 sentence on why it matters NOW. "
+    "End with '🧵'. Make people feel like they'll miss something if they don't read the thread.\n\n"
+    "Tweet 2 — WHAT ACTUALLY HAPPENED (MAX 240 chars): "
+    "Precise facts and figures — no filler. State the event like a Bloomberg terminal, not a tweet writer.\n\n"
+    "Tweet 3 — CRYPTO/MARKET READ (MAX 240 chars): "
+    "Your actual take on how this hits crypto and broader markets. First-person perspective is fine: 'The real risk here is...'\n\n"
+    "Tweet 4 — HISTORICAL PARALLEL (MAX 240 chars): "
+    "What happened the last time something like this played out? Specific year, event, outcome.\n\n"
+    "Tweet 5 — WHAT TO WATCH (MAX 240 chars): "
+    "Two to three concrete signals that will confirm or kill your thesis. Date or price level if possible.\n\n"
     "Tweet 6 — CTA (MAX 240 chars): "
-    "Friendly self-promo directing readers to Ledgexs channels for more intelligence like this:\n"
+    "Genuine, brief promo for Ledgexs channels — don't make it feel like an ad:\n"
     "• Telegram news: t.me/ledgexsofficial\n"
     "• Whale alerts: t.me/LedgexsWhale\n"
     "• Whale bot: @LX_Whale_Bot on Telegram\n"
-    "• Follow @Ledgexs on X\n"
-    "Keep it genuine and concise — not spammy.\n\n"
-    "Tone: senior analyst writing for institutional-grade traders. Sharp, engaging, not dry.\n"
-    "FORBIDDEN in all tweets: hashtags, cashtags ($SYMBOL — write BTC not $BTC), "
-    "'NFA', 'DYOR', 'to the moon', hype language.\n"
-    "REQUIRED: at least one specific number or data point per tweet (tweets 1-5).\n\n"
+    "• Follow @Ledgexs on X\n\n"
+    "Tone: real analyst voice — confident, direct, occasionally irreverent. Not dry, not hyped.\n"
+    "FORBIDDEN in all tweets: hashtags, cashtags ($BTC — write BTC), 'NFA', 'DYOR', 'to the moon'.\n"
+    "REQUIRED: at least one specific data point per tweet (1-5).\n\n"
     "Output ONLY a valid JSON array of exactly 6 strings:\n"
     "[\"tweet1\", \"tweet2\", \"tweet3\", \"tweet4\", \"tweet5\", \"tweet6\"]"
 )
@@ -232,16 +228,32 @@ def _save_state(state: dict) -> None:
         logger.warning("twitter_engagement: could not save state: %s", exc)
 
 
+# Curated crypto accounts to auto-follow (rotates through the list every 30 min)
+_CRYPTO_FOLLOW_LIST: list[str] = [
+    "lookonchain", "ai_9684xtpa", "WClementeIII", "ki_young_ju",
+    "100trillionUSD", "woonomic", "PeterLBrandt", "RaoulGMI",
+    "CryptoCapo_", "Pentosh1", "CryptoHayes", "APompliano",
+    "saylor", "novogratz", "glassnode", "santimentfeed",
+    "Cointelegraph", "CoinDesk", "TheBlock__", "DecryptMedia",
+    "VitalikButerin", "coinbase", "binance",
+    "uniswap", "aave", "MakerDAO", "compoundfinance",
+    "Chainlink", "0xPolygon", "arbitrum", "optimismFND",
+    "solana", "avalancheavax", "cosmos", "Polkadot",
+    "starkwareltd", "zksync", "eigenlayer", "pendle_fi",
+    "HyperliquidX", "dydx", "GMX_IO", "JupiterExchange",
+    "cobie", "hsakatrades", "inversebrah", "thedefiedge",
+    "Route2FI", "CryptoKaleo", "DonAlt", "SmartContracter",
+]
+FOLLOW_INTERVAL_S = 32 * 60   # ~30 min with slight randomisation
+
 # In-memory state; hydrated from disk at startup.
-# Schema: {
-#   "fear_greed_last_date": str,    # "YYYY-MM-DD"
-#   "top_movers_last_date": str,    # "YYYY-MM-DD"
-# }
 _state: dict = _load_state()
 _state.setdefault("fear_greed_last_date", "")
 _state.setdefault("top_movers_last_date", "")
 _state.setdefault("onchain_last_ts", 0.0)
 _state.setdefault("thread_last_ts", 0.0)
+_state.setdefault("follow_last_ts", 0.0)
+_state.setdefault("follow_idx", 0)
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -700,14 +712,57 @@ def _post_thread_now(news_context: str, market_context: str) -> None:
         _save_state(_state)
 
 
+# ── Feature 6: Auto-Follow ────────────────────────────────────────────────────
+
+async def _auto_follow_loop() -> None:
+    """Every ~30 min: follow one crypto account from the curated list.
+
+    Rotates through _CRYPTO_FOLLOW_LIST sequentially, cycling back to the
+    start when the end is reached.  Uses _twitter_v1.create_friendship() which
+    is idempotent — re-following an already-followed account is silently OK.
+    """
+    await asyncio.sleep(180)  # 3 min warm-up
+    logger.info("twitter_engagement: auto_follow_loop started.")
+
+    while True:
+        elapsed = time.time() - float(_state.get("follow_last_ts", 0.0))
+        # Randomise interval ±2 min so it doesn't fire at exact round minutes
+        jitter   = random.uniform(-120, 120)
+        interval = FOLLOW_INTERVAL_S + jitter
+
+        if elapsed >= interval:
+            if _twitter_v1 is not None and _CRYPTO_FOLLOW_LIST:
+                idx      = int(_state.get("follow_idx", 0)) % len(_CRYPTO_FOLLOW_LIST)
+                username = _CRYPTO_FOLLOW_LIST[idx]
+                try:
+                    _twitter_v1.create_friendship(screen_name=username)
+                    logger.info("twitter_engagement: auto-followed @%s", username)
+                except Exception as exc:
+                    logger.debug(
+                        "twitter_engagement: follow @%s — %s (already following or rate limit).",
+                        username, exc,
+                    )
+                # Advance index regardless of success (don't retry same account)
+                _state["follow_idx"]    = (idx + 1) % len(_CRYPTO_FOLLOW_LIST)
+                _state["follow_last_ts"] = time.time()
+                _save_state(_state)
+            else:
+                logger.debug("twitter_engagement: auto_follow skipped — Twitter client unavailable.")
+
+        await asyncio.sleep(300)  # check every 5 min
+
+
 # ── Main async runner ──────────────────────────────────────────────────────────
 
 async def _run_engagement() -> None:
-    """Launches all engagement feature coroutines as concurrent asyncio tasks."""
+    """Launches ALL engagement feature coroutines as concurrent asyncio tasks."""
     logger.info("twitter_engagement: starting all engagement tasks…")
     tasks = [
-        asyncio.create_task(_fear_and_greed_loop(), name="fear_and_greed"),
-        asyncio.create_task(_top_movers_loop(),     name="top_movers"),
+        asyncio.create_task(_fear_and_greed_loop(),      name="fear_and_greed"),
+        asyncio.create_task(_top_movers_loop(),           name="top_movers"),
+        asyncio.create_task(_onchain_detective_loop(),    name="onchain_detective"),
+        asyncio.create_task(_thread_storytelling_loop(), name="thread_storytelling"),
+        asyncio.create_task(_auto_follow_loop(),          name="auto_follow"),
     ]
     # Run forever; individual task exceptions are caught inside each coroutine.
     await asyncio.gather(*tasks, return_exceptions=True)

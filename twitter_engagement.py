@@ -412,51 +412,47 @@ async def _top_movers_loop() -> None:
 
 
 def _post_top_movers(today_str: str) -> None:
-    """Synchronous: fetch top gainers/losers from CoinGecko and tweet."""
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": 100,
-        "page": 1,
-        "sparkline": "false",
-        "price_change_percentage": "24h",
-    }
-    data = _safe_get("https://api.coingecko.com/api/v3/coins/markets", params=params)
-    if not data or not isinstance(data, list):
-        logger.warning("twitter_engagement: CoinGecko top movers returned no data.")
+    """Fetch top gainers/losers from CoinCap top-100 (replaces CoinGecko)."""
+    # CoinCap /v2/assets returns top-100 by market cap with 24h change — no API key, 200 req/min
+    data = _safe_get("https://api.coincap.io/v2/assets", params={"limit": 100})
+    assets = (data or {}).get("data", []) if isinstance(data, dict) else []
+    if not assets:
+        logger.warning("twitter_engagement: CoinCap top movers returned no data.")
         return
 
-    # Filter out stablecoins
-    stablecoins = {"usdt", "usdc", "busd", "dai", "tusd", "frax", "usdp", "usdd", "gusd"}
-    tradeable   = [c for c in data if c.get("symbol", "").lower() not in stablecoins]
+    stablecoins = {"usdt", "usdc", "busd", "dai", "tusd", "frax", "usdp", "usdd", "gusd", "fdusd"}
 
-    sorted_by_change = sorted(
-        tradeable,
-        key=lambda c: c.get("price_change_percentage_24h") or 0,
-    )
-    losers  = sorted_by_change[:3]    # most negative
-    gainers = sorted_by_change[-3:][::-1]  # most positive
+    def _change(a: dict) -> float:
+        try:
+            return float(a.get("changePercent24Hr") or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
-    def _fmt(coins: list, emoji: str) -> str:
+    def _price(a: dict) -> float:
+        try:
+            return float(a.get("priceUsd") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    tradeable = [a for a in assets if a.get("symbol", "").lower() not in stablecoins]
+    sorted_by_change = sorted(tradeable, key=_change)
+    losers  = sorted_by_change[:3]
+    gainers = sorted_by_change[-3:][::-1]
+
+    def _fmt(coins: list) -> str:
         lines = []
         for c in coins:
             name   = c.get("symbol", "?").upper()
-            change = c.get("price_change_percentage_24h") or 0
-            price  = c.get("current_price") or 0
+            change = _change(c)
+            price  = _price(c)
             lines.append(f"  {name}: {change:+.1f}% @ ${price:,.4g}")
         return "\n".join(lines)
 
-    # Build compact per-coin label: SYM +X.X%
     def _short_fmt(coins: list) -> str:
-        parts = []
-        for c in coins:
-            sym    = c.get("symbol", "?").upper()
-            change = c.get("price_change_percentage_24h") or 0
-            parts.append(f"{sym} {change:+.1f}%")
-        return "  ".join(parts)
+        return "  ".join(f"{c.get('symbol','?').upper()} {_change(c):+.1f}%" for c in coins)
 
-    gainers_str = _fmt(gainers, "📈")
-    losers_str  = _fmt(losers,  "📉")
+    gainers_str   = _fmt(gainers)
+    losers_str    = _fmt(losers)
     gainers_short = _short_fmt(gainers)
     losers_short  = _short_fmt(losers)
 
@@ -533,48 +529,58 @@ def _fetch_btc_onchain() -> str:
         vsize = mempool_info.get("vsize", 0)
         lines.append(f"Mempool: {count:,} unconfirmed txs ({vsize / 1e6:.1f} MB)")
 
-    # BTC price + volume from CoinGecko as complement
-    btc = _safe_get(
-        "https://api.coingecko.com/api/v3/simple/price",
-        params={"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true", "include_24hr_vol": "true"},
+    # BTC price + volume from Binance (replaces CoinGecko simple/price)
+    btc_ticker = _safe_get(
+        "https://api.binance.com/api/v3/ticker/24hr",
+        params={"symbol": "BTCUSDT"},
     )
-    if btc and "bitcoin" in btc:
-        bd      = btc["bitcoin"]
-        price   = bd.get("usd", 0)
-        change  = bd.get("usd_24h_change", 0) or 0
-        vol     = bd.get("usd_24h_vol", 0) or 0
-        lines.append(f"BTC price: ${price:,.0f} ({change:+.2f}% 24h) | Volume: ${vol / 1e9:.2f}B")
+    if btc_ticker and isinstance(btc_ticker, dict):
+        try:
+            price  = float(btc_ticker.get("lastPrice", 0) or 0)
+            change = float(btc_ticker.get("priceChangePercent", 0) or 0)
+            vol    = float(btc_ticker.get("quoteVolume", 0) or 0)
+            lines.append(f"BTC price: ${price:,.0f} ({change:+.2f}% 24h) | Volume: ${vol / 1e9:.2f}B")
+        except (TypeError, ValueError):
+            pass
 
     return "\n".join(lines) if lines else "BTC on-chain data temporarily unavailable."
 
 
 def _fetch_eth_onchain() -> str:
-    """Fetch ETH metrics from CoinGecko (free, no API key)."""
+    """Fetch ETH price/volume metrics from Binance (replaces CoinGecko)."""
     data = _safe_get(
-        "https://api.coingecko.com/api/v3/coins/ethereum",
-        params={"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"},
+        "https://api.binance.com/api/v3/ticker/24hr",
+        params={"symbol": "ETHUSDT"},
     )
-    if not data:
-        return "ETH on-chain data temporarily unavailable."
+    if not data or not isinstance(data, dict):
+        return "ETH data temporarily unavailable."
 
-    mkt  = data.get("market_data", {})
-    price            = mkt.get("current_price", {}).get("usd", 0)
-    vol_24h          = mkt.get("total_volume", {}).get("usd", 0)
-    market_cap       = mkt.get("market_cap", {}).get("usd", 0)
-    price_change_24h = mkt.get("price_change_percentage_24h", 0)
-    price_change_7d  = mkt.get("price_change_percentage_7d", 0)
-
-    # Staking / supply from blockchain data
-    blockchain_data = data.get("block_time_in_minutes", "?")
-    circulating     = mkt.get("circulating_supply", 0)
+    try:
+        price  = float(data.get("lastPrice", 0) or 0)
+        change = float(data.get("priceChangePercent", 0) or 0)
+        vol    = float(data.get("quoteVolume", 0) or 0)
+        high   = float(data.get("highPrice", 0) or 0)
+        low    = float(data.get("lowPrice", 0) or 0)
+    except (TypeError, ValueError):
+        return "ETH data temporarily unavailable."
 
     lines = [
-        f"Price: ${price:,.2f} ({price_change_24h:+.2f}% 24h, {price_change_7d:+.2f}% 7d)",
-        f"Volume (24h): ${vol_24h / 1e9:.2f}B",
-        f"Market cap: ${market_cap / 1e9:.1f}B",
-        f"Circulating supply: {circulating / 1e6:.2f}M ETH",
-        f"Avg block time: {blockchain_data} min",
+        f"Price: ${price:,.2f} ({change:+.2f}% 24h)",
+        f"Volume (24h): ${vol / 1e9:.2f}B",
+        f"24h High: ${high:,.2f} | 24h Low: ${low:,.2f}",
     ]
+
+    # Supplement with CoinCap for market cap (Binance doesn't provide it)
+    cc = _safe_get("https://api.coincap.io/v2/assets/ethereum")
+    if cc and isinstance(cc, dict):
+        d   = cc.get("data", {})
+        cap = float(d.get("marketCapUsd", 0) or 0)
+        sup = float(d.get("supply", 0) or 0)
+        if cap:
+            lines.append(f"Market cap: ${cap / 1e9:.1f}B")
+        if sup:
+            lines.append(f"Circulating supply: {sup / 1e6:.2f}M ETH")
+
     return "\n".join(l for l in lines if l)
 
 
@@ -648,41 +654,54 @@ async def _thread_storytelling_loop() -> None:
 
 
 def _build_market_context() -> str:
-    """Build a short real-data market snapshot to ground GPT thread generation."""
+    """Build a real-data market snapshot using Binance + CoinCap + Alternative.me.
+
+    CoinGecko is intentionally NOT used here — its free tier rate-limits too
+    aggressively (30 req/min) causing 429 errors under normal bot load.
+    """
     lines: list[str] = []
 
-    # BTC + ETH prices from CoinGecko
-    markets = _safe_get(
-        "https://api.coingecko.com/api/v3/coins/markets",
-        params={
-            "vs_currency": "usd",
-            "ids": "bitcoin,ethereum",
-            "price_change_percentage": "24h,7d",
-        },
-    )
-    if markets and isinstance(markets, list):
-        for c in markets:
-            sym   = c.get("symbol", "").upper()
-            price = c.get("current_price", 0)
-            c24   = c.get("price_change_percentage_24h", 0) or 0
-            c7d   = c.get("price_change_percentage_7d", 0) or 0
-            lines.append(f"${sym}: ${price:,.2f} ({c24:+.2f}% 24h, {c7d:+.2f}% 7d)")
+    # BTC + ETH prices from Binance (no rate limits on public endpoints)
+    for sym, pair in (("BTC", "BTCUSDT"), ("ETH", "ETHUSDT")):
+        ticker = _safe_get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": pair},
+        )
+        if ticker and isinstance(ticker, dict):
+            try:
+                price  = float(ticker.get("lastPrice", 0) or 0)
+                change = float(ticker.get("priceChangePercent", 0) or 0)
+                lines.append(f"${sym}: ${price:,.2f} ({change:+.2f}% 24h)")
+            except (TypeError, ValueError):
+                pass
 
-    # Fear & Greed
+    # Fear & Greed from Alternative.me (already reliable, no issues)
     fng = _safe_get("https://api.alternative.me/fng/", params={"limit": 1})
     if fng and "data" in fng:
         v = fng["data"][0].get("value", "?")
-        l = fng["data"][0].get("value_classification", "")
-        lines.append(f"Fear & Greed: {v}/100 ({l})")
+        lbl = fng["data"][0].get("value_classification", "")
+        lines.append(f"Fear & Greed: {v}/100 ({lbl})")
 
-    # Global market cap from CoinGecko
-    global_data = _safe_get("https://api.coingecko.com/api/v3/global")
-    if global_data and "data" in global_data:
-        gd        = global_data["data"]
-        total_mkt = gd.get("total_market_cap", {}).get("usd", 0)
-        btc_dom   = gd.get("market_cap_percentage", {}).get("btc", 0)
-        lines.append(f"Total market cap: ${total_mkt / 1e12:.2f}T")
-        lines.append(f"BTC dominance: {btc_dom:.1f}%")
+    # Global market cap + BTC dominance from CoinCap (replaces CoinGecko /global)
+    # CoinCap top-10 assets → sum market caps → compute BTC share
+    cc_global = _safe_get("https://api.coincap.io/v2/assets", params={"limit": 10})
+    if cc_global and isinstance(cc_global, dict):
+        assets = cc_global.get("data", [])
+        try:
+            total = sum(float(a.get("marketCapUsd", 0) or 0) for a in assets)
+            btc_cap = next(
+                (float(a.get("marketCapUsd", 0) or 0)
+                 for a in assets if a.get("id") == "bitcoin"),
+                0,
+            )
+            if total > 0:
+                # Top-10 is ~85% of total market — scale up to approximate total
+                est_total = total / 0.85
+                btc_dom   = (btc_cap / est_total) * 100
+                lines.append(f"Total market cap (est.): ${est_total / 1e12:.2f}T")
+                lines.append(f"BTC dominance (est.): {btc_dom:.1f}%")
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
 
     return "\n".join(lines) if lines else "Market data temporarily unavailable."
 

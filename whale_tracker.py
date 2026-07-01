@@ -852,31 +852,44 @@ def _btc_scan_loop() -> None:
         logger.info("whale_tracker: BTC scan disabled (requests not installed).")
         return
 
-    API = "https://blockstream.info/api"
+    # mempool.space uses the same Esplora REST format as blockstream.info
+    # and is reliable on Railway (blockstream.info frequently times out).
+    APIS = [
+        "https://mempool.space/api",
+        "https://blockstream.info/api",   # fallback
+    ]
+
+    def _btc_get(path: str, timeout: int = 15) -> _requests.Response:
+        """Try each API in order; raise on total failure."""
+        last_exc: Exception = RuntimeError("no APIs configured")
+        for base in APIS:
+            try:
+                r = _requests.get(f"{base}{path}", timeout=timeout)
+                r.raise_for_status()
+                return r
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("whale_tracker: BTC API %s failed: %s", base, exc)
+        raise last_exc
 
     try:
-        tip_text = _requests.get(f"{API}/blocks/tip/height", timeout=12).text.strip()
-        last_height = int(tip_text)
+        last_height = int(_btc_get("/blocks/tip/height").text.strip())
         logger.info("whale_tracker: Bitcoin scan active at block %d.", last_height)
     except Exception as exc:
-        logger.warning("whale_tracker: Blockstream API unreachable — BTC scan disabled: %s", exc)
+        logger.warning("whale_tracker: BTC API unreachable — BTC scan disabled: %s", exc)
         return
 
     while True:
         time.sleep(60)
         try:
-            tip = int(_requests.get(f"{API}/blocks/tip/height", timeout=12).text.strip())
+            tip = int(_btc_get("/blocks/tip/height").text.strip())
             if tip <= last_height:
                 continue
 
             for height in range(last_height + 1, tip + 1):
                 try:
-                    block_hash = _requests.get(
-                        f"{API}/block-height/{height}", timeout=12
-                    ).text.strip()
-                    txs: list[dict] = _requests.get(
-                        f"{API}/block/{block_hash}/txs", timeout=20
-                    ).json()
+                    block_hash = _btc_get(f"/block-height/{height}").text.strip()
+                    txs: list[dict] = _btc_get(f"/block/{block_hash}/txs", timeout=25).json()
                 except Exception as exc:
                     logger.debug("whale_tracker: BTC block %d fetch: %s", height, exc)
                     continue
@@ -981,7 +994,7 @@ def _safe_loop(fn, name: str) -> None:
             fn()
         except Exception as exc:
             logger.warning("whale_tracker: %s crashed (%s) — restarting in 60 s.", name, exc)
-            time.sleep(60)
+        time.sleep(60)  # always wait before restart, whether clean exit or crash
 
 # ── Public API ────────────────────────────────────────────────────────────────
 

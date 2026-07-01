@@ -3354,9 +3354,16 @@ if __name__ == "__main__":
     time.sleep(5)
     logger.info("Bot is running…")
 
+    _backoff = 5   # seconds; doubles on each consecutive crash, caps at 120 s
     while True:
         try:
             bot.infinity_polling(timeout=60, long_polling_timeout=60, logger_level=logging.WARNING)
+            _backoff = 5   # clean exit (shouldn't happen) → reset backoff
         except Exception as _poll_exc:
-            logger.error("Polling crashed: %s — restarting in 5 s…", _poll_exc)
-            time.sleep(5)
+            logger.error("Polling crashed: %s — restarting in %d s…", _poll_exc, _backoff)
+            try:
+                bot.stop_polling()
+            except Exception:
+                pass
+            time.sleep(_backoff)
+            _backoff = min(_backoff * 2, 120)
